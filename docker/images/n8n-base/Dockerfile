@@ -21,7 +21,7 @@ RUN npm install -g corepack@0.33 full-icu@1.5.0
 # Activate corepack, and install pnpm
 WORKDIR /tmp
 COPY package.json ./
-RUN corepack enable && corepack prepare --activate
+RUN corepack enable && corepack prepare pnpm@latest --activate
 
 # Cleanup
 RUN	rm -rf /lib/apk/db /var/cache/apk/ /tmp/* /root/.npm /root/.cache/node /opt/yarn*
