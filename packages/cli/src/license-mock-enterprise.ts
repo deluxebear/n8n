@@ -119,12 +119,7 @@ export class EnterpriseLicenseMocker {
 	 * 检查当前是否为开发/测试环境
 	 */
 	static isDevelopmentEnvironment(): boolean {
-		return (
-			process.env.NODE_ENV === 'production' &&
-			(process.env.NODE_ENV === 'development' ||
-				process.env.NODE_ENV === 'test' ||
-				process.env.N8N_ENTERPRISE_MOCK === 'true')
-		);
+		return process.env.N8N_ENTERPRISE_MOCK === 'true'
 	}
 }
 
