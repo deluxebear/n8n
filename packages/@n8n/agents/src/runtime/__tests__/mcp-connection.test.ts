@@ -1,5 +1,5 @@
 import { McpClient } from '../../sdk/mcp-client';
-import { McpConnection } from '../mcp-connection';
+import { McpConnection } from '../mcp/mcp-connection';
 
 const sseCtor = vi.fn();
 const streamableHttpCtor = vi.fn();

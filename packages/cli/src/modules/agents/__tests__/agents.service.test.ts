@@ -1,37 +1,22 @@
 /* eslint-disable @typescript-eslint/require-await, @typescript-eslint/unbound-method, id-denylist -- async mock stubs, unbound-method references and short `cb` names are acceptable test idioms */
 import { type AgentIntegrationConfig, type AgentJsonConfig } from '@n8n/api-types';
-import type { Logger } from '@n8n/backend-common';
-import type {
-	CustomFetch,
-	HttpTransport,
-	OutboundHttp,
-	SsrfProtectionService,
-} from '@n8n/backend-network';
 import { mockLogger } from '@n8n/backend-test-utils';
-import type { AgentsConfig, GlobalConfig, SsrfProtectionConfig } from '@n8n/config';
-import type { User, CredentialsEntity, UserRepository, WorkflowRepository } from '@n8n/db';
+import type { AgentsConfig, GlobalConfig } from '@n8n/config';
+import type { User, CredentialsEntity } from '@n8n/db';
 import { Container } from '@n8n/di';
 import { mock } from 'jest-mock-extended';
 import type { JSONSchema7 } from 'json-schema';
 
-import type { ActiveExecutions } from '@/active-executions';
 import { CredentialsService } from '@/credentials/credentials.service';
 import { ConflictError } from '@/errors/response-errors/conflict.error';
 import { NotFoundError } from '@/errors/response-errors/not-found.error';
-import type { EphemeralNodeExecutor } from '@/node-execution';
-import type { OauthService } from '@/oauth/oauth.service';
 import type { Publisher } from '@/scaling/pubsub/publisher.service';
-import type { UrlService } from '@/services/url.service';
 import type { Telemetry } from '@/telemetry';
-import type { WorkflowRunner } from '@/workflow-runner';
-import type { WorkflowFinderService } from '@/workflows/workflow-finder.service';
 
 import type { AgentExecutionService } from '../agent-execution.service';
 import type { AgentKnowledgeService } from '../agent-knowledge.service';
-import { AgentRuntimeReconstructionService } from '../agent-runtime-reconstruction.service';
 import { AgentSkillsService } from '../agent-skills.service';
 import { AgentTaskService } from '../agent-task.service';
-import type { AgentsToolsService } from '../agents-tools.service';
 import { AgentsService, chatThreadId } from '../agents.service';
 import type { AgentHistory } from '../entities/agent-history.entity';
 import type { AgentTaskSnapshot } from '../entities/agent-task-snapshot.entity';
@@ -42,17 +27,12 @@ import {
 	type AgentChatIntegrationContext,
 } from '../integrations/agent-chat-integration';
 import { ChatIntegrationService } from '../integrations/chat-integration.service';
-import { ChatIntegrationActionExecutor } from '../integrations/integration-action-executor';
-import { ChatIntegrationContextQueryExecutor } from '../integrations/integration-context-query-executor';
-import { IntegrationMessageContextService } from '../integrations/integration-message-context.service';
 import type { N8NCheckpointStorage } from '../integrations/n8n-checkpoint-storage';
 import type { N8nMemory } from '../integrations/n8n-memory';
 import type { AgentHistoryRepository } from '../repositories/agent-history.repository';
 import type { AgentTaskSnapshotRepository } from '../repositories/agent-task-snapshot.repository';
 import type { AgentTaskRepository } from '../repositories/agent-task.repository';
 import type { AgentRepository } from '../repositories/agent.repository';
-import type { AgentSecureRuntime } from '../runtime/agent-secure-runtime';
-import { SubAgentForegroundRunner } from '../sub-agents/sub-agent-foreground-runner';
 
 const agentId = 'agent-1';
 const projectId = 'project-1';
@@ -88,36 +68,6 @@ function makeAgentHistory(overrides: Partial<AgentHistory> = {}): AgentHistory {
 		author: testUserAuthor,
 		...overrides,
 	} as unknown as AgentHistory;
-}
-
-function makeRuntimeReconstructionService(
-	modules: string[] = [],
-): AgentRuntimeReconstructionService {
-	const transport = mock<HttpTransport>();
-	transport.asCustomFetch.mockReturnValue(jest.fn() as unknown as CustomFetch);
-	const outboundHttp = mock<OutboundHttp>();
-	outboundHttp.transport.mockReturnValue(transport);
-
-	return new AgentRuntimeReconstructionService(
-		mock<Logger>(),
-		mock<AgentRepository>(),
-		mock<WorkflowRunner>(),
-		mock<ActiveExecutions>(),
-		mock<WorkflowRepository>(),
-		mock<UserRepository>(),
-		mock<WorkflowFinderService>(),
-		mock<UrlService>(),
-		mock<N8NCheckpointStorage>(),
-		mock<AgentSecureRuntime>(),
-		mock<EphemeralNodeExecutor>(),
-		mock<AgentsToolsService>(),
-		mock<N8nMemory>(),
-		mock<OauthService>(),
-		{ modules } as unknown as AgentsConfig,
-		outboundHttp,
-		mock<SsrfProtectionConfig>({ enabled: true }),
-		mock<SsrfProtectionService>(),
-	);
 }
 
 function makeTaskSnapshot(overrides: Partial<AgentTaskSnapshot> = {}): AgentTaskSnapshot {
@@ -196,6 +146,7 @@ describe('AgentsService', () => {
 			modules: [],
 			sandboxEnabled: false,
 			sandboxProvider: '',
+			daytonaVolumeId: '',
 		} as unknown as AgentsConfig;
 		globalConfig = mock<GlobalConfig>({
 			multiMainSetup: { enabled: false },
@@ -221,6 +172,7 @@ describe('AgentsService', () => {
 			chatIntegrationService,
 			agentKnowledgeService,
 			mock(),
+			mock(),
 		);
 	});
 
@@ -237,6 +189,9 @@ describe('AgentsService', () => {
 			expect(service.isKnowledgeBaseEnabled()).toBe(false);
 
 			agentsConfig.sandboxProvider = 'daytona';
+			expect(service.isKnowledgeBaseEnabled()).toBe(false);
+
+			agentsConfig.daytonaVolumeId = 'volume-1';
 			expect(service.isKnowledgeBaseEnabled()).toBe(true);
 
 			agentsConfig.sandboxEnabled = false;
@@ -1544,78 +1499,172 @@ describe('AgentsService', () => {
 			const streamConfig = (streamSpy.mock.calls[0] as [{ userId?: string }])[0];
 			expect(streamConfig.userId).toBe(userId);
 		});
-	});
 
-	describe('integration runtime tools', () => {
-		beforeEach(() => {
-			Container.set(SubAgentForegroundRunner, mock<SubAgentForegroundRunner>());
-		});
+		it('records a suspended execution when the consumer stops at the suspension event', async () => {
+			const schema: AgentJsonConfig = {
+				name: 'Test Agent',
+				model: 'anthropic/claude-sonnet-4-5',
+				instructions: 'Be helpful',
+			};
+			const agent = makeAgent({ schema });
+			agentRepository.findByIdAndProjectId.mockResolvedValue(agent);
 
-		it('injects each credential integration context/action tool only once', async () => {
-			const integrationRegistry = new ChatIntegrationRegistry();
-			Container.set(ChatIntegrationRegistry, integrationRegistry);
-			Container.set(IntegrationMessageContextService, mock<IntegrationMessageContextService>());
-			Container.set(ChatIntegrationActionExecutor, mock<ChatIntegrationActionExecutor>());
-			Container.set(
-				ChatIntegrationContextQueryExecutor,
-				mock<ChatIntegrationContextQueryExecutor>(),
-			);
-
-			const toolNames: string[] = [];
+			const chunks = [
+				{ type: 'tool-call', toolCallId: 'tc-1', toolName: 'chat_action', input: {} },
+				{
+					type: 'tool-call-suspended',
+					toolCallId: 'tc-1',
+					toolName: 'chat_action',
+					runId: 'run-1',
+					suspendPayload: { type: 'integration_action' },
+				},
+			];
 			const runtimeAgent = {
-				tool: jest.fn((tool: { name?: string } | Array<{ name?: string }>) => {
-					for (const item of Array.isArray(tool) ? tool : [tool]) {
-						if (item.name) toolNames.push(item.name);
-					}
+				name: 'Test Agent',
+				stream: jest.fn().mockResolvedValue({
+					stream: new ReadableStream({
+						start(controller) {
+							for (const chunk of chunks) controller.enqueue(chunk);
+							controller.close();
+						},
+					}),
 				}),
-				on: jest.fn(),
-				hasCheckpointStorage: jest.fn().mockReturnValue(true),
-				checkpoint: jest.fn(),
 			};
 
-			const reconstructionService = makeRuntimeReconstructionService();
-			await (
-				reconstructionService as unknown as {
-					injectRuntimeDependencies(params: {
-						agent: typeof runtimeAgent;
-						agentId: string;
-						projectId: string;
-						credentialProvider: unknown;
-						userId: string;
-						runtimeProfile: 'top-level';
-						config: AgentJsonConfig;
-						nodeToolsEnabled: boolean;
-						subAgentDelegation: {
-							sourcesById: Record<string, never>;
-							availableSubAgents: [];
-						};
-						parentAgentIdForDelegation: string;
-						credentialIntegrations: Array<{ type: string; credentialId: string }>;
-					}): Promise<void>;
-				}
-			).injectRuntimeDependencies({
-				agent: runtimeAgent,
+			jest.spyOn(service as never, 'createCredentialProvider').mockReturnValue(mock());
+			jest
+				.spyOn(service as never, 'reconstructFromConfig')
+				.mockResolvedValue({ agent: runtimeAgent, toolRegistry: new Map() } as never);
+
+			// Mimic the SSE pump: stop consuming as soon as the suspension arrives.
+			// This abandons the generator mid-yield — recording must still happen.
+			for await (const chunk of service.executeForChat({
 				agentId,
 				projectId,
-				credentialProvider: mock(),
-				userId: 'user-1',
-				runtimeProfile: 'top-level',
-				config: {
-					name: 'Test Agent',
-					model: 'anthropic/claude-sonnet-4-5',
-					instructions: 'Be helpful',
-				},
-				nodeToolsEnabled: false,
-				parentAgentIdForDelegation: agentId,
-				subAgentDelegation: {
-					sourcesById: {},
-					availableSubAgents: [],
-				},
-				credentialIntegrations: [{ type: 'slack', credentialId: 'cred-slack' }],
-			});
+				message: 'show me a card',
+				userId,
+				memory: { threadId: 'thread-1', resourceId: userId },
+			})) {
+				if (chunk.type === 'tool-call-suspended') break;
+			}
+			// recordMessage is fired-and-forgotten from a finally block — flush microtasks.
+			await new Promise(process.nextTick);
 
-			expect(toolNames.filter((name) => name === 'slack_context')).toHaveLength(1);
-			expect(toolNames.filter((name) => name === 'slack_action')).toHaveLength(1);
+			expect(agentExecutionService.recordMessage).toHaveBeenCalledWith(
+				expect.objectContaining({
+					threadId: 'thread-1',
+					userMessage: 'show me a card',
+					hitlStatus: 'suspended',
+				}),
+			);
+		});
+	});
+
+	describe('agent run telemetry context', () => {
+		const schema: AgentJsonConfig = {
+			name: 'Test Agent',
+			model: 'anthropic/claude-sonnet-4-5',
+			instructions: 'Be helpful',
+			skills: [{ type: 'skill', id: 'summarize' }],
+		};
+
+		beforeEach(() => {
+			jest.spyOn(service as never, 'createCredentialProvider').mockReturnValue(mock());
+			jest
+				.spyOn(service as never, 'reconstructFromConfig')
+				.mockResolvedValue({ agent: {}, toolRegistry: new Map() } as never);
+		});
+
+		it('marks draft chat and manual task runs as test', async () => {
+			agentRepository.findByIdAndProjectId.mockResolvedValue(makeAgent({ schema }));
+			const streamSpy = jest
+				.spyOn(service as never, 'streamChatResponse')
+				.mockImplementation(async function* () {} as never);
+
+			await service
+				.executeForChat({
+					agentId,
+					projectId,
+					message: 'hello',
+					userId,
+					memory: { threadId: 'thread-1', resourceId: userId },
+				})
+				.next();
+			await service
+				.executeForTaskNow({
+					agentId,
+					projectId,
+					userId,
+					message: 'run task',
+					memory: { threadId: 'thread-2', resourceId: 'task-run' },
+					taskId: 'task-1',
+				})
+				.next();
+
+			expect(streamSpy).toHaveBeenNthCalledWith(
+				1,
+				expect.objectContaining({
+					telemetry: expect.objectContaining({
+						runType: 'test',
+						configuration: expect.objectContaining({
+							model: 'anthropic/claude-sonnet-4-5',
+							num_skills: 1,
+						}),
+					}),
+				}),
+			);
+			expect(streamSpy).toHaveBeenNthCalledWith(
+				2,
+				expect.objectContaining({
+					telemetry: expect.objectContaining({ runType: 'test' }),
+				}),
+			);
+		});
+
+		it('marks published chat and scheduled task runs as production', async () => {
+			agentRepository.findByIdAndProjectId.mockResolvedValue(
+				makeAgent({
+					schema,
+					activeVersionId: versionId,
+					activeVersion: makeAgentHistory({ schema, publishedById: 'publisher-user' }),
+				}),
+			);
+			const streamSpy = jest
+				.spyOn(service as never, 'streamChatResponse')
+				.mockImplementation(async function* () {} as never);
+
+			await service
+				.executeForChatPublished({
+					agentId,
+					projectId,
+					message: 'hello',
+					memory: { threadId: 'thread-1', resourceId: 'platform-user-1' },
+					integrationType: 'slack',
+				})
+				.next();
+			await service
+				.executeForTaskPublished({
+					agentId,
+					projectId,
+					message: 'run task',
+					memory: { threadId: 'thread-2', resourceId: 'task-run' },
+					taskId: 'task-1',
+					taskVersionId: versionId,
+				})
+				.next();
+
+			expect(streamSpy).toHaveBeenNthCalledWith(
+				1,
+				expect.objectContaining({
+					telemetry: expect.objectContaining({ runType: 'production' }),
+				}),
+			);
+			expect(streamSpy).toHaveBeenNthCalledWith(
+				2,
+				expect.objectContaining({
+					telemetry: expect.objectContaining({ runType: 'production' }),
+				}),
+			);
 		});
 	});
 
@@ -1942,6 +1991,62 @@ describe('AgentsService', () => {
 				message_count: 1,
 			});
 		});
+
+		it.each([
+			{ useDraftVersion: true, expectedRunType: 'test' },
+			{ useDraftVersion: false, expectedRunType: 'production' },
+		] as const)(
+			'passes $expectedRunType telemetry context when useDraftVersion is $useDraftVersion',
+			async ({ useDraftVersion, expectedRunType }) => {
+				const schema: AgentJsonConfig = {
+					name: 'Test Agent',
+					model: 'anthropic/claude-sonnet-4-5',
+					instructions: 'Be helpful',
+				};
+				const agent = makeAgent({
+					schema,
+					activeVersionId: versionId,
+					activeVersion: makeAgentHistory({ schema, publishedById: 'publisher-user' }),
+				});
+				agentRepository.findByIdAndProjectId.mockResolvedValue(agent);
+				Container.set(CredentialsService, mock<CredentialsService>());
+
+				const stream = jest.fn().mockResolvedValue({
+					stream: {
+						getReader: () => ({
+							read: jest.fn().mockResolvedValue({ done: true, value: undefined }),
+							releaseLock: jest.fn(),
+						}),
+					},
+				});
+				jest.spyOn(service as never, 'compileIsolated').mockResolvedValue({
+					ok: true,
+					agent: { name: 'Test Agent', stream },
+				} as never);
+
+				await service.executeForWorkflow(
+					agentId,
+					'hello',
+					'execution-1',
+					'thread-1',
+					userId,
+					projectId,
+					userId,
+					useDraftVersion,
+				);
+
+				expect(agentExecutionService.recordMessage).toHaveBeenCalledWith(
+					expect.objectContaining({
+						telemetry: expect.objectContaining({
+							runType: expectedRunType,
+							configuration: expect.objectContaining({
+								model: 'anthropic/claude-sonnet-4-5',
+							}),
+						}),
+					}),
+				);
+			},
+		);
 
 		it('applies a per-call output schema to the compiled agent', async () => {
 			const schema: AgentJsonConfig = {
@@ -3183,6 +3288,73 @@ describe('AgentsService', () => {
 				message_count: 1,
 			});
 		});
+
+		it.each([
+			{ usePublishedVersion: true, expectedRunType: 'production', userIdForResume: undefined },
+			{ usePublishedVersion: false, expectedRunType: 'test', userIdForResume: userId },
+		] as const)(
+			'passes $expectedRunType telemetry context when usePublishedVersion is $usePublishedVersion',
+			async ({ usePublishedVersion, expectedRunType, userIdForResume }) => {
+				const n8nPublisherId = 'n8n-user-publisher';
+				const runId = 'run-abc';
+				const toolCallId = 'tool-xyz';
+				const schema: AgentJsonConfig = {
+					name: 'Test Agent',
+					model: 'anthropic/claude-sonnet-4-5',
+					instructions: 'Be helpful',
+				};
+				const agent = makeAgent({
+					schema,
+					activeVersionId: versionId,
+					activeVersion: makeAgentHistory({ schema, publishedById: n8nPublisherId }),
+				});
+				agentRepository.findByIdAndProjectId.mockResolvedValue(agent);
+				n8nCheckpointStorage.getStatus.mockResolvedValue({
+					status: 'ok',
+					checkpoint: { persistence: { threadId: 'thread-1', resourceId: 'platform-user-1' } },
+				} as never);
+
+				const mockAgentInstance = {
+					name: 'Test Agent',
+					resume: jest.fn().mockResolvedValue({
+						stream: {
+							getReader: () => ({
+								read: jest.fn().mockResolvedValue({ done: true, value: undefined }),
+								releaseLock: jest.fn(),
+							}),
+						},
+					}),
+				};
+
+				jest.spyOn(service as never, 'createCredentialProvider').mockReturnValue(mock());
+				jest
+					.spyOn(service as never, 'reconstructFromConfig')
+					.mockResolvedValue({ agent: mockAgentInstance, toolRegistry: new Map() } as never);
+
+				await service
+					.resumeForChat({
+						agentId,
+						projectId,
+						runId,
+						toolCallId,
+						resumeData: { value: 'yes' },
+						usePublishedVersion,
+						...(userIdForResume ? { userId: userIdForResume } : {}),
+					})
+					.next();
+
+				expect(agentExecutionService.recordMessage).toHaveBeenCalledWith(
+					expect.objectContaining({
+						telemetry: expect.objectContaining({
+							runType: expectedRunType,
+							configuration: expect.objectContaining({
+								model: 'anthropic/claude-sonnet-4-5',
+							}),
+						}),
+					}),
+				);
+			},
+		);
 	});
 
 	describe('delete — chat cleanup', () => {
@@ -3197,7 +3369,7 @@ describe('AgentsService', () => {
 			const agent = makeAgent();
 			agentRepository.findByIdAndProjectId.mockResolvedValue(agent);
 
-			await service.delete(agentId, projectId);
+			await service.delete(agentId, projectId, 'user-1');
 
 			expect(agentRepository.remove).toHaveBeenCalledWith(agent);
 			expect(memoryBackend.deleteThreadsByPrefix).toHaveBeenCalledWith(chatThreadId(agentId));
@@ -3209,29 +3381,23 @@ describe('AgentsService', () => {
 			const agent = makeAgent();
 			agentRepository.findByIdAndProjectId.mockResolvedValue(agent);
 
-			await service.delete(agentId, projectId);
+			await service.delete(agentId, projectId, 'user-1');
 
-			expect(agentKnowledgeService.deleteAllFilesForAgent).toHaveBeenCalledWith(agentId);
+			expect(agentKnowledgeService.deleteAllFilesForAgent).toHaveBeenCalledWith(
+				projectId,
+				agentId,
+				'user-1',
+			);
 			expect(agentKnowledgeService.deleteAllFilesForAgent.mock.invocationCallOrder[0]).toBeLessThan(
 				agentRepository.remove.mock.invocationCallOrder[0],
 			);
-		});
-
-		it('still removes the agent when knowledge file cleanup fails', async () => {
-			const agent = makeAgent();
-			agentRepository.findByIdAndProjectId.mockResolvedValue(agent);
-			agentKnowledgeService.deleteAllFilesForAgent.mockRejectedValueOnce(new Error('storage down'));
-
-			await expect(service.delete(agentId, projectId)).resolves.toBe(true);
-
-			expect(agentRepository.remove).toHaveBeenCalledWith(agent);
 		});
 
 		it('requests task reconciliation when deleting the agent', async () => {
 			const agent = makeAgent();
 			agentRepository.findByIdAndProjectId.mockResolvedValue(agent);
 
-			await service.delete(agentId, projectId);
+			await service.delete(agentId, projectId, 'user-1');
 
 			expect(taskService.requestReconcile).toHaveBeenCalledWith(agentId);
 		});
@@ -3241,7 +3407,7 @@ describe('AgentsService', () => {
 			agentRepository.findByIdAndProjectId.mockResolvedValue(agent);
 			memoryBackend.deleteThreadsByPrefix.mockRejectedValueOnce(new Error('db down'));
 
-			await expect(service.delete(agentId, projectId)).resolves.toBe(true);
+			await expect(service.delete(agentId, projectId, 'user-1')).resolves.toBe(true);
 		});
 	});
 

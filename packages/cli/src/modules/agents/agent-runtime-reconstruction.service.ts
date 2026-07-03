@@ -8,6 +8,9 @@ import {
 } from '@n8n/agents';
 import {
 	isNodeToolsEnabled,
+	N8N_CHAT_ACTION_TOOL_NAME,
+	N8N_CHAT_CONTEXT_TOOL_NAME,
+	N8N_CHAT_INTEGRATION_TYPE,
 	SUB_AGENT_MAX_CHILDREN_DEFAULT,
 	SUB_AGENT_TASK_DIFFICULTIES,
 	type AgentIntegrationConfig,
@@ -31,10 +34,11 @@ import { ActiveExecutions } from '@/active-executions';
 import { EphemeralNodeExecutor } from '@/node-execution';
 import { OauthService } from '@/oauth/oauth.service';
 import { UrlService } from '@/services/url.service';
-import { createAiMcpFetch } from '@/utils/ai-proxy-fetch';
+import { createAiMcpFetch, createAiProxyFetch } from '@/utils/ai-proxy-fetch';
 import { WorkflowRunner } from '@/workflow-runner';
 import { WorkflowFinderService } from '@/workflows/workflow-finder.service';
 
+import { AgentsToolsService } from './agents-tools.service';
 import { Agent } from './entities/agent.entity';
 import { ChatIntegrationRegistry } from './integrations/agent-chat-integration';
 import { ChatIntegrationActionExecutor } from './integrations/integration-action-executor';
@@ -47,7 +51,6 @@ import {
 } from './integrations/integration-tools';
 import { N8NCheckpointStorage } from './integrations/n8n-checkpoint-storage';
 import { N8nMemory } from './integrations/n8n-memory';
-import { createGetEnvironmentTool } from './tools/environment-tool';
 import {
 	buildFromJson,
 	buildProviderToolsForModel,
@@ -56,12 +59,15 @@ import {
 } from './json-config/from-json-config';
 import { buildMcpClientForServer } from './json-config/mcp-client-factory';
 import { resolveCredentialAwareModelConfig } from './json-config/model-config';
+import { AgentFileRepository } from './repositories/agent-file.repository';
 import { AgentRepository } from './repositories/agent.repository';
 import { AgentSecureRuntime } from './runtime/agent-secure-runtime';
-import { buildToolRegistry, type ToolRegistry } from './tool-registry';
-import { AgentsToolsService } from './agents-tools.service';
+import { isAgentKnowledgeBaseEnabled } from './agent-knowledge-gate';
+import { AgentKnowledgeSandboxService } from './agent-knowledge-sandbox.service';
 import { createN8nDelegateSubAgentTool } from './sub-agents/delegate-sub-agent-tool';
 import { SubAgentForegroundRunner } from './sub-agents/sub-agent-foreground-runner';
+import { buildToolRegistry, type ToolRegistry } from './tool-registry';
+import { createGetEnvironmentTool } from './tools/environment-tool';
 export type AgentRuntimeProfile = 'top-level' | 'sub-agent';
 
 export interface SubAgentDelegationConfig {
@@ -93,6 +99,7 @@ export class AgentRuntimeReconstructionService {
 	constructor(
 		private readonly logger: Logger,
 		private readonly agentRepository: AgentRepository,
+		private readonly agentFileRepository: AgentFileRepository,
 		private readonly workflowRunner: WorkflowRunner,
 		private readonly activeExecutions: ActiveExecutions,
 		private readonly workflowRepository: WorkflowRepository,
@@ -107,6 +114,7 @@ export class AgentRuntimeReconstructionService {
 		private readonly oauthService: OauthService,
 		private readonly agentsConfig: AgentsConfig,
 		private readonly outboundHttp: OutboundHttp,
+		private readonly agentKnowledgeSandboxService: AgentKnowledgeSandboxService,
 		private readonly ssrfConfig: SsrfProtectionConfig,
 		private readonly ssrfProtectionService: SsrfProtectionService,
 	) {}
@@ -201,6 +209,8 @@ export class AgentRuntimeReconstructionService {
 		const toolResolver = this.makeToolResolver(projectId, userId);
 		const resolvedTools: BuiltTool[] = [];
 
+		// Transport for LLM calls
+		const aiProxyFetch = createAiProxyFetch(this.outboundHttp);
 		// Transport for MCP calls
 		const aiMcpFetch = createAiMcpFetch(
 			this.outboundHttp,
@@ -227,6 +237,7 @@ export class AgentRuntimeReconstructionService {
 			skills,
 			memoryFactory: this.getMemoryFactory(memoryOwnerAgentId),
 			buildMcpClient,
+			modelFetch: aiProxyFetch,
 		});
 
 		await this.injectRuntimeDependencies({
@@ -354,20 +365,39 @@ export class AgentRuntimeReconstructionService {
 			nodeToolsEnabled,
 			subAgentDelegation,
 			parentAgentIdForDelegation,
+			integrationType,
 			credentialIntegrations,
 		} = params;
 
 		agent.tool(createGetEnvironmentTool());
 
-		if (runtimeProfile === 'top-level') {
-			const integrationRegistry = Container.get(ChatIntegrationRegistry);
+		if (
+			isAgentKnowledgeBaseEnabled(this.agentsConfig) &&
+			(await this.agentFileRepository.hasFilesForAgent(agentId))
+		) {
+			const { createKnowledgeRetrievalTools } = await import(
+				'./tools/knowledge/search-knowledge.tool'
+			);
+			agent.tool(
+				createKnowledgeRetrievalTools({
+					projectId,
+					agentId,
+					userId,
+					sandboxService: this.agentKnowledgeSandboxService,
+				}),
+			);
+		}
 
-			if (credentialIntegrations.length > 0) {
+		if (runtimeProfile === 'top-level') {
+			const includeN8nChat = integrationType === N8N_CHAT_INTEGRATION_TYPE;
+
+			if (credentialIntegrations.length > 0 || includeN8nChat) {
+				const integrationRegistry = Container.get(ChatIntegrationRegistry);
 				const messageContextStore = Container.get(IntegrationMessageContextService);
 				const actionExecutor = Container.get(ChatIntegrationActionExecutor);
 				const queryExecutor = Container.get(ChatIntegrationContextQueryExecutor);
 
-				for (const descriptor of getIntegrationToolConnectionDescriptors(
+				const descriptors = getIntegrationToolConnectionDescriptors(
 					credentialIntegrations,
 					agentId,
 					(integrationConfig) => {
@@ -377,7 +407,24 @@ export class AgentRuntimeReconstructionService {
 							actions: integrationDef?.actions,
 						};
 					},
-				)) {
+				);
+
+				if (includeN8nChat) {
+					// Implicit in-app chat channel: credential-less, per-run, fixed
+					// tool names (exactly one n8n_chat per run — no suffixing).
+					const n8nChat = integrationRegistry.require(N8N_CHAT_INTEGRATION_TYPE);
+					descriptors.push({
+						agentId,
+						integration: { type: N8N_CHAT_INTEGRATION_TYPE },
+						integrationConnectionId: N8N_CHAT_INTEGRATION_TYPE,
+						contextToolName: N8N_CHAT_CONTEXT_TOOL_NAME,
+						actionToolName: N8N_CHAT_ACTION_TOOL_NAME,
+						contextQueries: [...n8nChat.contextQueries],
+						actions: [...n8nChat.actions],
+					});
+				}
+
+				for (const descriptor of descriptors) {
 					agent.tool(
 						createIntegrationContextTool({ descriptor, messageContextStore, queryExecutor }),
 					);
@@ -406,7 +453,7 @@ export class AgentRuntimeReconstructionService {
 		}
 
 		if (!agent.hasCheckpointStorage()) {
-			agent.checkpoint(this.n8nCheckpointStorage);
+			agent.checkpoint(this.n8nCheckpointStorage.getStorage(agentId));
 		}
 	}
 

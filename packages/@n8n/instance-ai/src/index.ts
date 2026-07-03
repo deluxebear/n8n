@@ -357,9 +357,6 @@ export const McpClientManager: typeof McpClientManagerMod.McpClientManager = laz
 export const mapAgentChunkToEvent: typeof MapChunkMod.mapAgentChunkToEvent = lazyFunction(
 	() => loadMapChunk().mapAgentChunkToEvent,
 );
-export const isRecord: typeof StreamHelpersMod.isRecord = lazyFunction(
-	() => loadStreamHelpers().isRecord,
-);
 export const parseSuspension: typeof StreamHelpersMod.parseSuspension = lazyFunction(
 	() => loadStreamHelpers().parseSuspension,
 );
@@ -478,10 +475,17 @@ export type {
 	ManagedBackgroundTask,
 	SpawnManagedBackgroundTaskOptions,
 } from './runtime/background-task-manager';
+export { MemoryTaskRegistry } from './runtime/memory-task-registry';
 export type RunStateRegistry<TUser = unknown> = RunStateRegistryMod.RunStateRegistry<TUser>;
 export const RunStateRegistry: typeof RunStateRegistryMod.RunStateRegistry = lazyClass(
 	() => loadRunStateRegistry().RunStateRegistry,
 );
+export type { RunDebugRecord } from './debug/run-debug-buffer';
+export {
+	RunDebugBuffer,
+	buildRunDebugLabel,
+	createRunDebugStepHooks,
+} from './debug/run-debug-buffer';
 export type {
 	ActiveRunState,
 	BackgroundTaskStatusSnapshot,
@@ -510,8 +514,10 @@ export type {
 	ResumableStreamContext,
 	ResumableStreamControl,
 	ResumableStreamSource,
+	TraceStatus,
 } from './runtime/resumable-stream-executor';
 export type { WorkSummary } from './stream/work-summary-accumulator';
+export type { RunTokenUsage, BuilderUsageItem } from './stream/usage-accumulator';
 export const resumeAgentRun: typeof StreamRunnerMod.resumeAgentRun = lazyFunction(
 	() => loadStreamRunner().resumeAgentRun,
 );

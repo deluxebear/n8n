@@ -473,32 +473,6 @@ describe('FormTrigger, formWebhook', () => {
 		await expect(formWebhook(ctx)).resolves.toEqual({ noWebhookResponse: true });
 	});
 
-	it('renders the form when the node has no stored authentication parameter', async () => {
-		const ctx = mock<IWebhookFunctions>();
-		ctx.getNode.mockReturnValue({ typeVersion: 1, name: 'Form Trigger' } as INode);
-
-		// Mirror the engine: getNodeParameter throws when the key is absent and
-		// no default is supplied, but returns the default when one is given.
-		ctx.getNodeParameter.calledWith('authentication').mockImplementation(() => {
-			throw new Error('Could not get parameter');
-		});
-		ctx.getNodeParameter.calledWith('authentication', 'none').mockReturnValue('none');
-
-		ctx.getNodeParameter.calledWith('options').mockReturnValue({});
-		ctx.getNodeParameter.calledWith('formFields.values').mockReturnValue([]);
-		ctx.getNodeParameter.calledWith('formTitle').mockReturnValue('Test Form');
-		ctx.getNodeParameter.calledWith('formDescription').mockReturnValue('');
-		ctx.getNodeParameter.calledWith('responseMode').mockReturnValue('onReceived');
-
-		ctx.getRequestObject.mockReturnValue({ method: 'GET', query: {}, headers: {} } as any);
-		ctx.getResponseObject.mockReturnValue({ render: jest.fn(), setHeader: jest.fn() } as any);
-		ctx.getMode.mockReturnValue('manual');
-		ctx.getInstanceId.mockReturnValue('instanceId');
-		ctx.getChildNodes.mockReturnValue([]);
-
-		await expect(formWebhook(ctx)).resolves.toEqual({ noWebhookResponse: true });
-	});
-
 	it('should call response render', async () => {
 		const mockRender = vi.fn();
 

@@ -63,8 +63,8 @@ function assertDomainPolicyAllowsUrl(url: string, policy: AuthFetchDomainPolicy)
 
 /**
  * Build a fetch wrapper that:
- *   1. routes through n8n's `proxyFetch` (so corporate HTTP_PROXY settings
- *      apply uniformly),
+ *   1. routes through the supplied proxy-aware `baseFetch` (so corporate
+ *      HTTP_PROXY settings apply uniformly),
  *   2. injects the latest auth headers on every request,
  *   3. on a single 401, calls `onUnauthorized` to refresh the token and
  *      retries the request once with the new headers.
