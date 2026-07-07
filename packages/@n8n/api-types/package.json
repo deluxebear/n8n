@@ -1,6 +1,6 @@
 {
   "name": "@n8n/api-types",
-  "version": "1.28.4",
+  "version": "1.29.4",
   "scripts": {
     "clean": "rimraf dist .turbo",
     "dev": "pnpm watch",
@@ -33,6 +33,7 @@
     "zod": "catalog:"
   },
   "dependencies": {
+    "@n8n_io/ai-assistant-sdk": "catalog:",
     "n8n-workflow": "workspace:*",
     "xss": "catalog:",
     "@n8n/permissions": "workspace:*"

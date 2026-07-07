@@ -437,6 +437,10 @@ export const getWorkspaceRoot: typeof SharedSandboxMod.getWorkspaceRoot = lazyFu
 export const getPromptWorkspaceRoot: typeof SharedSandboxMod.getPromptWorkspaceRoot = lazyFunction(
 	() => loadSharedSandbox().getPromptWorkspaceRoot,
 );
+export const getPromptSandboxInstructions: typeof SharedSandboxMod.getPromptSandboxInstructions =
+	lazyFunction(() => loadSharedSandbox().getPromptSandboxInstructions);
+export const getPromptFilesystemInstructions: typeof SharedSandboxMod.getPromptFilesystemInstructions =
+	lazyFunction(() => loadSharedSandbox().getPromptFilesystemInstructions);
 export const setupSandboxWorkspace: typeof SandboxSetupMod.setupSandboxWorkspace = lazyFunction(
 	() => loadSandboxSetup().setupSandboxWorkspace,
 );
@@ -480,6 +484,7 @@ export type RunStateRegistry<TUser = unknown> = RunStateRegistryMod.RunStateRegi
 export const RunStateRegistry: typeof RunStateRegistryMod.RunStateRegistry = lazyClass(
 	() => loadRunStateRegistry().RunStateRegistry,
 );
+export { orchestratorAgentId } from './runtime/orchestrator-identity';
 export type { RunDebugRecord } from './debug/run-debug-buffer';
 export {
 	RunDebugBuffer,
@@ -662,6 +667,13 @@ export type {
 	FolderSummary,
 	ServiceProxyConfig,
 } from './types';
+export type {
+	OrchestratorRunHandoffReason,
+	OrchestratorRunHandoffState,
+	OrchestratorRunStopSignal,
+} from './runtime/orchestrator-run-control';
+export { createOrchestratorRunControl } from './runtime/orchestrator-run-control';
+export { createOrchestratorRunControlForState } from './runtime/orchestrator-run-control';
 export type { DetachedDelegateTaskResult } from './tools/orchestration/delegate.tool';
 export const classifyAttachments: typeof StructuredFileParserMod.classifyAttachments = lazyFunction(
 	() => loadStructuredFileParser().classifyAttachments,

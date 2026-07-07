@@ -663,9 +663,13 @@ export interface NewCredentialsModal extends ModalState {
 	 * Resolves to whether the credential modal should close (false keeps it open for
 	 * a new-tab hand-off; true closes it for an in-thread append). */
 	instanceAiCredentialHelp?: (credential: {
-		name: string;
+		credentialType: string;
 		displayName: string;
 		nodeName?: string;
+		nodeType?: string;
+		id?: string;
+		documentationUrl?: string;
+		oauthRedirectUrl?: string;
 	}) => Promise<boolean>;
 }
 
@@ -710,7 +714,8 @@ export type NodeCreatorOpenSource =
 	| 'notice_error_message'
 	| 'add_node_button'
 	| 'add_evaluation_node_button'
-	| 'templates_callout';
+	| 'templates_callout'
+	| 'instance_ai';
 
 export interface INodeCreatorState {
 	itemsFilter: string;

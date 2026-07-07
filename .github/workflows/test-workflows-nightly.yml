@@ -1,5 +1,11 @@
 name: 'Test: Workflows Nightly'
 
+# Nightly schedule disabled (DEVP-544): the "Run Workflow Tests with Snapshots"
+# job fails the majority of its runs due to host-level port contention on shared
+# runners (a stale n8n process holds port 5679, so the Task Broker hits
+# EADDRINUSE), not a product regression. Re-enable the `schedule` trigger once the
+# port cleanup / ephemeral-port fix lands. The job can still be run on demand via
+# workflow_dispatch.
 on:
   workflow_dispatch:
     inputs:

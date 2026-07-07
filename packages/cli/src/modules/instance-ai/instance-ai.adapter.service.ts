@@ -48,9 +48,12 @@ import type { User, ExecutionSummaries } from '@n8n/db';
 
 import { extractResolvedNodeParameters } from './extract-resolved-node-parameters';
 import { InstanceAiSettingsService } from './instance-ai-settings.service';
-import { createTriggerExecutionData } from './trigger-run-data';
 import {
-	resolveNodeTypeDefinition,
+	buildInstanceAiRunPinDataPlan,
+	pruneUnreachedVerificationPinData,
+	sdkPinDataToRuntime,
+} from './instance-ai-run-pin-data';
+import {
 	resolveBuiltinNodeDefinitionDirs,
 	listNodeDiscriminators,
 } from './node-definition-resolver';
@@ -71,20 +74,17 @@ import { hasGlobalScope, PROJECT_OWNER_ROLE_SLUG, type Scope } from '@n8n/permis
 import { LessThan } from '@n8n/typeorm';
 import {
 	type ICredentialsDecrypted,
-	type IDataObject,
 	type INode,
 	type INodeParameters,
 	type INodeProperties,
 	type INodeTypeDescription,
 	type IConnections,
 	type IWorkflowSettings,
-	type IPinData,
 	type IWorkflowExecutionDataProcess,
 	type DataTableFilter,
 	type DataTableRow,
 	type DataTableRows,
 	type WorkflowExecuteMode,
-	type WorkflowExecutionMockDataSource,
 	type ExecutionError,
 	NodeHelpers,
 	Workflow,
@@ -105,10 +105,10 @@ import { ExecutionPersistence } from '@/executions/execution-persistence';
 import { License } from '@/license';
 import { LoadNodesAndCredentials } from '@/load-nodes-and-credentials';
 import { NodeTypes } from '@/node-types';
+import { NodeCatalogService } from '@/node-catalog';
 import { DataTableRepository } from '@/modules/data-table/data-table.repository';
 import { DataTableService } from '@/modules/data-table/data-table.service';
 import { MCP_REGISTRY_PACKAGE_NAME } from '@/modules/mcp-registry/node-description-transform';
-import { synthesizeMcpRegistryTypeDef } from '@/modules/mcp-registry/synthesize-type-def';
 import { SourceControlPreferencesService } from '@/modules/source-control.ee/source-control-preferences.service.ee';
 import { userHasScopes } from '@/permissions.ee/check-access';
 import { FolderService } from '@/services/folder.service';
@@ -231,9 +231,13 @@ export class InstanceAiAdapterService {
 		private readonly aiBuilderTemporaryWorkflowRepository: AiBuilderTemporaryWorkflowRepository,
 		private readonly ssrfProtectionService: SsrfProtectionService,
 		private readonly outboundHttp: OutboundHttp,
+		private readonly nodeCatalogService?: NodeCatalogService,
 	) {
 		this.logger = logger.scoped('instance-ai');
 		this.allowSendingParameterValues = globalConfig.ai.allowSendingParameterValues;
+		this.loadNodesAndCredentials.addPostProcessor?.(async () => {
+			this.nodesCache = null;
+		});
 	}
 
 	createContext(
@@ -949,63 +953,38 @@ export class InstanceAiAdapterService {
 					pushRef,
 				};
 
-				// Merge pin data from three sources:
-				// 1. Workflow-level pinData (from the saved workflow)
-				// 2. Override pinData (passed by verify-built-workflow for mocked credential verification)
-				// 3. Trigger input pinData (from the inputData parameter)
-				const workflowPinData = workflow.pinData ?? {};
-				const overridePinData = options?.pinData
-					? (sdkPinDataToRuntime(options.pinData) ?? {})
-					: {};
-				const basePinData = { ...workflowPinData, ...overridePinData };
-				const mockDataSources: WorkflowExecutionMockDataSource[] = [];
-
-				if (inputData && triggerNode) {
-					mockDataSources.push('trigger_input');
-				}
-
-				if (Object.keys(overridePinData).length > 0) {
-					mockDataSources.push('verification_pin_data');
-				}
-
-				if (Object.keys(workflowPinData).length > 0) {
-					mockDataSources.push('workflow_pin_data');
-				}
-
-				if (inputData && triggerNode) {
-					const triggerPinData = getPinDataForTrigger(triggerNode, inputData);
-					const mergedPinData = { ...basePinData, ...triggerPinData };
-					const triggerItems = triggerPinData[triggerNode.name];
-
-					runData.startNodes = [{ name: triggerNode.name, sourceData: null }];
-					runData.pinData = mergedPinData;
-					runData.executionData = createTriggerExecutionData({
-						triggerNode,
-						pinData: mergedPinData,
-						triggerItems,
-					});
+				const pinDataPlan = buildInstanceAiRunPinDataPlan({
+					workflowPinData: workflow.pinData ?? {},
+					verificationPinData: options?.verificationPinData,
+					inputData,
+					triggerNode,
+				});
+				if (pinDataPlan.startNodeName) {
+					runData.startNodes = [{ name: pinDataPlan.startNodeName, sourceData: null }];
 				} else if (triggerNode) {
 					// No inputData but we have a trigger node (e.g. test-trigger from
 					// setup-workflow). Tell the execution engine which node to start from
 					// so it doesn't fail to auto-detect webhook-only triggers like ChatTrigger.
 					runData.triggerToStartFrom = { name: triggerNode.name };
-					const pinData = Object.keys(basePinData).length > 0 ? basePinData : undefined;
-					if (pinData) {
-						runData.pinData = pinData;
-					}
-					// Also persist pin data in executionData so queued workers can hydrate
+				}
+				if (pinDataPlan.runPinData) {
+					runData.pinData = pinDataPlan.runPinData;
+				}
+				if (pinDataPlan.triggerExecutionData) {
+					// Persist pin data in executionData so queued workers can hydrate
 					// verification fixtures while starting from the trigger node.
-					runData.executionData = createTriggerExecutionData({ triggerNode, pinData });
-				} else if (Object.keys(basePinData).length > 0) {
-					runData.pinData = basePinData;
+					runData.executionData = pinDataPlan.triggerExecutionData;
 				}
 
 				runData.source = 'instance_ai';
 				runData.telemetryMetadata = {
-					mockDataSources,
+					mockDataSources: pinDataPlan.mockDataSources,
 				};
 
-				const trackBuilderExecutedWorkflow = (status: ExecutionResult['status']) => {
+				const trackBuilderExecutedWorkflow = (
+					status: ExecutionResult['status'],
+					error?: string,
+				) => {
 					if (!threadId) return;
 
 					telemetry.track('Builder executed workflow', {
@@ -1015,90 +994,84 @@ export class InstanceAiAdapterService {
 						pinned_node_count: Object.keys(runData.pinData ?? {}).length,
 						exec_type: runData.executionMode,
 						status,
+						...(error ? { error } : {}),
 					});
 				};
 
-				const executionId = await workflowRunner.run(runData);
-
-				// Wait for completion with timeout protection
-				const timeoutMs = Math.min(options?.timeout ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS);
-
-				if (activeExecutions.has(executionId)) {
-					let timeoutId: NodeJS.Timeout | undefined;
-					const timeoutPromise = new Promise<never>((_, reject) => {
-						timeoutId = setTimeout(() => {
-							reject(new Error(`Execution timed out after ${timeoutMs}ms`));
-						}, timeoutMs);
-					});
-
-					try {
-						await Promise.race([
-							activeExecutions.getPostExecutePromise(executionId),
-							timeoutPromise,
-						]);
-						clearTimeout(timeoutId);
-					} catch (error) {
-						clearTimeout(timeoutId);
-						// On timeout, cancel the execution
-						if (error instanceof Error && error.message.includes('timed out')) {
-							try {
-								activeExecutions.stopExecution(
-									executionId,
-									new TimeoutExecutionCancelledError(executionId),
-								);
-							} catch {
-								// Execution may have completed between timeout and cancel
-							}
-							const result = {
+				try {
+					const executionId = await workflowRunner.run(runData);
+					const pruneVerificationPins = async (executedNodeNames?: string[]) => {
+						try {
+							await pruneUnreachedVerificationPinData({
 								executionId,
-								status: 'error',
-								error: `Execution timed out after ${timeoutMs}ms and was cancelled`,
-							} satisfies ExecutionResult;
-							trackBuilderExecutedWorkflow(result.status);
-							return result;
+								verificationPinData: pinDataPlan.verificationPinData,
+								nonVerificationPinData: pinDataPlan.nonVerificationPinData,
+								executedNodeNames,
+							});
+						} catch (error) {
+							logger.warn('Failed to prune verification pin data from execution', {
+								executionId,
+								error: error instanceof Error ? error.message : String(error),
+							});
 						}
-						throw error;
-					}
-				}
+					};
 
-				// Persist the simulation map onto the saved execution so the editor
-				// can label simulated node outputs. Only nodes that actually ran are
-				// recorded — an execution that dead-ends early must not claim
-				// simulations that never happened. Post-completion update: works in
-				// queue mode too (plain DB write), and the final save has already
-				// happened once the post-execute promise resolves. Best-effort — a
-				// failure must not mask the execution result.
-				if (options?.simulation && Object.keys(options.simulation).length > 0) {
-					try {
-						const execution = await executionRepository.findSingleExecution(executionId, {
-							includeData: true,
-							unflattenData: true,
+					// Wait for completion with timeout protection
+					const timeoutMs = Math.min(options?.timeout ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS);
+
+					if (activeExecutions.has(executionId)) {
+						let timeoutId: NodeJS.Timeout | undefined;
+						const timeoutPromise = new Promise<never>((_, reject) => {
+							timeoutId = setTimeout(() => {
+								reject(new Error(`Execution timed out after ${timeoutMs}ms`));
+							}, timeoutMs);
 						});
-						if (execution?.data) {
-							const runData = execution.data.resultData.runData ?? {};
-							const simulation = Object.fromEntries(
-								Object.entries(options.simulation).filter(([nodeName]) =>
-									Object.hasOwn(runData, nodeName),
-								),
-							);
-							if (Object.keys(simulation).length > 0) {
-								execution.data.resultData.simulation = simulation;
-								await executionRepository.updateExistingExecution(executionId, {
-									data: execution.data,
-								});
+
+						try {
+							await Promise.race([
+								activeExecutions.getPostExecutePromise(executionId),
+								timeoutPromise,
+							]);
+							clearTimeout(timeoutId);
+						} catch (error) {
+							clearTimeout(timeoutId);
+							// On timeout, cancel the execution
+							if (error instanceof Error && error.message.includes('timed out')) {
+								try {
+									activeExecutions.stopExecution(
+										executionId,
+										new TimeoutExecutionCancelledError(executionId),
+									);
+								} catch {
+									// Execution may have completed between timeout and cancel
+								}
+								const result = {
+									executionId,
+									status: 'error',
+									error: `Execution timed out after ${timeoutMs}ms and was cancelled`,
+								} satisfies ExecutionResult;
+								await pruneVerificationPins();
+								trackBuilderExecutedWorkflow(result.status, result.error);
+								return result;
 							}
+							throw error;
 						}
-					} catch (error) {
-						logger.warn('Failed to persist simulation metadata on execution', {
-							executionId,
-							error: error instanceof Error ? error.message : String(error),
-						});
 					}
-				}
 
-				const result = await extractExecutionResult(executionId, allowSendingParameterValues);
-				trackBuilderExecutedWorkflow(result.status);
-				return result;
+					const result = await extractExecutionResult(executionId, allowSendingParameterValues);
+					await pruneVerificationPins(result.executedNodeNames);
+					trackBuilderExecutedWorkflow(result.status, result.error);
+					return result;
+				} catch (error) {
+					// A failure to launch (or any other unsettled error) is still an
+					// errored builder run — track it before rethrowing so it isn't
+					// silently dropped from telemetry.
+					trackBuilderExecutedWorkflow(
+						'error',
+						error instanceof Error ? error.message : String(error),
+					);
+					throw error;
+				}
 			},
 
 			async getStatus(executionId: string) {
@@ -1772,8 +1745,11 @@ export class InstanceAiAdapterService {
 		const fetchCache = this.webResearchCache;
 		const searchCacheRef = this.searchCache;
 		const settingsService = this.settingsService;
+
 		const { outboundHttp, ssrfProtectionService } = this;
-		const sharedTransport = outboundHttp.transport({ ssrf: ssrfProtectionService });
+		const sharedTransport = outboundHttp.transport({
+			ssrf: this.ssrfProtectionService, // LLM/user-chosen URLs
+		});
 		const userId = user.id;
 
 		// Lazy search method that resolves credentials on first call
@@ -1922,10 +1898,17 @@ export class InstanceAiAdapterService {
 	private _nodeDefinitionDirs?: string[];
 
 	getNodeDefinitionDirs(): string[] {
+		const catalogDirs = this.nodeCatalogService?.getNodeDefinitionDirs();
+		if (catalogDirs?.length) return catalogDirs;
+
 		if (!this._nodeDefinitionDirs) {
 			this._nodeDefinitionDirs = resolveBuiltinNodeDefinitionDirs();
 		}
 		return this._nodeDefinitionDirs;
+	}
+
+	private getNodeCatalogService(): NodeCatalogService {
+		return this.nodeCatalogService ?? Container.get(NodeCatalogService);
 	}
 
 	private createNodeAdapter(user: User): InstanceAiNodeService {
@@ -1948,17 +1931,6 @@ export class InstanceAiAdapterService {
 				if (exact) return exact;
 			}
 			return nodes.find((n) => n.name === nodeType);
-		};
-
-		const normalizeNodeVersion = (version?: string): number | undefined => {
-			if (!version) return undefined;
-			const normalized = version.replace(/^v/i, '');
-			if (!/^\d+$/.test(normalized)) return Number(normalized);
-			// Supports v3 and compact decimals like v34 -> 3.4; assumes minor version < 10.
-			if (normalized.length === 2) {
-				return Number(`${normalized[0]}.${normalized[1]}`);
-			}
-			return Number(normalized);
 		};
 
 		return {
@@ -2109,47 +2081,29 @@ export class InstanceAiAdapterService {
 			},
 
 			getNodeTypeDefinition: async (nodeType, options) => {
-				const nodes = await getNodes();
+				const nodeCatalogService = this.getNodeCatalogService();
+				await nodeCatalogService.initialize();
 
-				// Synthetic MCP registry nodes have no on-disk type-def, so the
-				// standard resolver would 404 on them. Match either the bare slug
-				// (e.g. `notion`) or the package-prefixed form, then synthesise
-				// the TypeScript content from the in-memory description.
-				const registryNode =
-					nodes.find((n) => n.name === `${MCP_REGISTRY_PACKAGE_NAME}.${nodeType}`) ??
-					(nodeType.startsWith(`${MCP_REGISTRY_PACKAGE_NAME}.`)
-						? nodes.find((n) => n.name === nodeType)
-						: undefined);
-				if (registryNode) {
-					const builderHint = registryNode.builderHint?.searchHint;
-					return {
-						content: synthesizeMcpRegistryTypeDef(registryNode),
-						...(builderHint ? { builderHint } : {}),
-					};
-				}
+				const { version, resource, operation, mode } = options ?? {};
+				const getDefinition = async (nodeId: string) =>
+					await nodeCatalogService.getNodeTypeDefinition({
+						nodeId,
+						...(version ? { version } : {}),
+						...(resource ? { resource } : {}),
+						...(operation ? { operation } : {}),
+						...(mode ? { mode } : {}),
+					});
 
-				const result = resolveNodeTypeDefinition(nodeType, this.getNodeDefinitionDirs(), options);
+				const result = await getDefinition(nodeType);
+				if (!result.error || nodeType.includes('.')) return result;
 
-				if (result.error) {
-					return { content: '', error: result.error };
-				}
-
-				const nodeDesc = findNodeByVersion(
-					nodes,
-					nodeType,
-					normalizeNodeVersion(result.version ?? options?.version),
-				);
-				const builderHint = nodeDesc?.builderHint?.searchHint;
-
-				return {
-					content: result.content,
-					version: result.version,
-					...(builderHint ? { builderHint } : {}),
-				};
+				return await getDefinition(`${MCP_REGISTRY_PACKAGE_NAME}.${nodeType}`);
 			},
 
 			listDiscriminators: async (nodeType) => {
-				return listNodeDiscriminators(nodeType, this.getNodeDefinitionDirs());
+				const nodeCatalogService = this.getNodeCatalogService();
+				await nodeCatalogService.initialize();
+				return listNodeDiscriminators(nodeType, nodeCatalogService.getNodeDefinitionDirs());
 			},
 
 			getParameterIssues: async (nodeType, typeVersion, parameters) => {
@@ -2907,132 +2861,6 @@ function getExecutionModeForTrigger(node: INode): WorkflowExecuteMode {
 	}
 }
 
-/**
- * Validate that `inputData` matches the shape the caller of `verify-built-workflow`
- * is expected to pass for this trigger. Throws a descriptive error when the shape
- * is wrong — this is surfaced to the orchestrator via the execution result and
- * prevents the common "null downstream values" misdiagnosis where the orchestrator
- * would otherwise patch the workflow's expressions (breaking it in production).
- */
-function validateInputDataShape(node: INode, inputData: Record<string, unknown>): void {
-	if (node.type === FORM_TRIGGER_NODE_TYPE) {
-		// Production Form Trigger emits field values FLAT on `json` alongside
-		// `submittedAt` and `formMode`. Callers that place fields under `formFields`
-		// (whether pure-wrap `{formFields: {...}}` or mixed-key `{formFields: {...},
-		// other: ...}`) produce pin data where `$json.<field>` resolves to null and
-		// downstream expressions look broken. Any top-level `formFields` object is
-		// treated as a mistake — real Form Trigger fields are scalars and would not
-		// surface as a nested object here.
-		const formFieldsValue = inputData.formFields;
-		const looksWrapped = typeof formFieldsValue === 'object' && formFieldsValue !== null;
-		if (looksWrapped) {
-			throw new Error(
-				'verify-built-workflow: inputData for a Form Trigger must be a flat field map ' +
-					'(e.g. {name: "Alice", email: "a@b.c"}), NOT wrapped in `formFields`. ' +
-					'The production Form Trigger emits fields directly on $json, so downstream ' +
-					'expressions like $json.name are correct. Re-run with the flat shape.',
-			);
-		}
-	}
-}
-
-/** Construct proper pin data per trigger type. */
-function getPinDataForTrigger(node: INode, inputData: Record<string, unknown>): IPinData {
-	validateInputDataShape(node, inputData);
-
-	switch (node.type) {
-		case CHAT_TRIGGER_NODE_TYPE:
-			return {
-				[node.name]: [
-					{
-						json: {
-							sessionId: `instance-ai-${Date.now()}`,
-							action: 'sendMessage',
-							chatInput:
-								typeof inputData.chatInput === 'string'
-									? inputData.chatInput
-									: JSON.stringify(inputData),
-						},
-					},
-				],
-			};
-
-		case FORM_TRIGGER_NODE_TYPE:
-			return {
-				[node.name]: [
-					{
-						json: {
-							submittedAt: new Date().toISOString(),
-							formMode: 'instanceAi',
-							...inputData,
-						},
-					},
-				],
-			};
-
-		case WEBHOOK_NODE_TYPE: {
-			// Allow callers that already wrap the payload as an envelope
-			// (`{body, headers?, query?}`) — unwrap once so the adapter's outer
-			// `body: inputData` wrapper doesn't create double nesting. But only
-			// treat `inputData` as an envelope when ALL top-level keys look like
-			// envelope fields; otherwise a flat payload that happens to contain a
-			// `body` field (e.g. `{event: 'signup', body: {...}}`) would have its
-			// sibling fields silently dropped, producing the same "null downstream
-			// values" failure the Form Trigger validator exists to prevent.
-			const envelopeKeys = new Set(['body', 'headers', 'query']);
-			const inputKeys = Object.keys(inputData);
-			const looksLikeEnvelope =
-				inputKeys.length > 0 &&
-				inputKeys.every((k) => envelopeKeys.has(k)) &&
-				typeof inputData.body === 'object' &&
-				inputData.body !== null;
-			const body = looksLikeEnvelope ? (inputData.body as Record<string, unknown>) : inputData;
-			const headers =
-				looksLikeEnvelope && typeof inputData.headers === 'object' && inputData.headers !== null
-					? (inputData.headers as Record<string, unknown>)
-					: {};
-			const query =
-				looksLikeEnvelope && typeof inputData.query === 'object' && inputData.query !== null
-					? (inputData.query as Record<string, unknown>)
-					: {};
-			return {
-				[node.name]: [
-					{
-						json: { headers, query, body },
-					},
-				],
-			};
-		}
-
-		case SCHEDULE_TRIGGER_NODE_TYPE: {
-			const now = new Date();
-			return {
-				[node.name]: [
-					{
-						json: {
-							timestamp: now.toISOString(),
-							'Readable date': now.toLocaleString(),
-							'Day of week': now.toLocaleDateString('en-US', { weekday: 'long' }),
-							Year: String(now.getFullYear()),
-							Month: now.toLocaleDateString('en-US', { month: 'long' }),
-							'Day of month': String(now.getDate()).padStart(2, '0'),
-							Hour: String(now.getHours()).padStart(2, '0'),
-							Minute: String(now.getMinutes()).padStart(2, '0'),
-							Second: String(now.getSeconds()).padStart(2, '0'),
-						},
-					},
-				],
-			};
-		}
-
-		default:
-			// Generic fallback for unknown trigger types
-			return {
-				[node.name]: [{ json: inputData as never }],
-			};
-	}
-}
-
 /** Extract structured debug info from a completed execution. */
 export async function extractExecutionDebugInfo(
 	executionId: string,
@@ -3141,19 +2969,6 @@ export async function extractExecutionDebugInfo(
 		failedNode,
 		nodeTrace,
 	};
-}
-
-/**
- * Convert SDK pinData (Record<string, IDataObject[]>) to runtime format (IPinData).
- * SDK stores plain objects; runtime wraps each item in { json: item }.
- */
-function sdkPinDataToRuntime(pinData: Record<string, unknown[]> | undefined): IPinData {
-	const result: IPinData = {};
-	if (!pinData) return result;
-	for (const [nodeName, items] of Object.entries(pinData)) {
-		result[nodeName] = items.map((item) => ({ json: (item ?? {}) as IDataObject }));
-	}
-	return result;
 }
 
 /**

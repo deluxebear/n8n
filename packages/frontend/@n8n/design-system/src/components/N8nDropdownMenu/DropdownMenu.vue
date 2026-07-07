@@ -316,8 +316,8 @@ defineExpose({ open, close });
 			</N8nButton>
 		</DropdownMenuTrigger>
 
-		<component
-			:is="teleported || portalTarget ? DropdownMenuPortal : 'template'"
+		<DropdownMenuPortal
+			:disabled="!teleported && !portalTarget"
 			v-bind="portalTarget ? { to: portalTarget } : {}"
 		>
 			<DropdownMenuContent
@@ -404,7 +404,7 @@ defineExpose({ open, close });
 					<slot v-if="slots.footer" name="footer" />
 				</template>
 			</DropdownMenuContent>
-		</component>
+		</DropdownMenuPortal>
 	</DropdownMenuRoot>
 </template>
 

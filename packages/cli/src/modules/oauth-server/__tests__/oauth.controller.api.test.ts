@@ -42,6 +42,7 @@ describe('GET /.well-known/oauth-authorization-server', () => {
 			grant_types_supported: ['authorization_code', 'refresh_token'],
 			token_endpoint_auth_methods_supported: ['none', 'client_secret_post', 'client_secret_basic'],
 			code_challenge_methods_supported: ['S256'],
+			authorization_response_iss_parameter_supported: true,
 			...(SUPPORTED_SCOPES.length > 0 && { scopes_supported: SUPPORTED_SCOPES }),
 		});
 	});
@@ -304,7 +305,7 @@ describe('POST /mcp-oauth/register', () => {
 
 		// Stub the pre-check guard to always pass, simulating two concurrent
 		// registrations that both saw count < limit and made it past the guard.
-		const guardSpy = jest
+		const guardSpy = vi
 			.spyOn(OAuthServerService.prototype, 'isClientLimitReached')
 			.mockResolvedValue(false);
 
