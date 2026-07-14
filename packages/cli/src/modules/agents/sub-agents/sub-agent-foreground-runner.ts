@@ -24,8 +24,6 @@ import { SubAgentSourceResolver } from './sub-agent-source-resolver';
 
 export interface SubAgentForegroundRunContext {
 	projectId: string;
-	/** n8n user ID — required for workflow/node tool resolution during reconstruction. */
-	userId: string;
 	/** Saved n8n agent id of the delegating parent agent, used to link the child session back. */
 	parentAgentId?: string;
 	credentialProvider: CredentialProvider;
@@ -98,7 +96,6 @@ export class SubAgentForegroundRunner {
 			toolDescriptors: runtimeSource.toolDescriptors,
 			toolCodeByName: runtimeSource.toolCodeByName,
 			skills: runtimeSource.skills,
-			userId: context.userId,
 			runtimeProfile: 'sub-agent',
 			parentAgentIdForDelegation: context.parentAgentId,
 			user: context.user,

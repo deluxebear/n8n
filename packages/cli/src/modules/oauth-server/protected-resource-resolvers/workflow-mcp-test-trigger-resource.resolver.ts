@@ -29,7 +29,7 @@ export class WorkflowMcpTestTriggerResourceResolver implements ProtectedResource
 	readonly scopes = WORKFLOW_MCP_TRIGGER_SCOPES;
 
 	async resolveByUrl(resourceUrl: string) {
-		const pathname = resourceUrlToWebhookPath(resourceUrl, this.urlService.getWebhookBaseUrl());
+		const pathname = resourceUrlToWebhookPath(resourceUrl, this.urlService.getTestWebhookBaseUrl());
 		if (pathname === undefined) {
 			this.logger.debug(`Resource URL is not under the webhook base URL: ${resourceUrl}`);
 			return undefined;

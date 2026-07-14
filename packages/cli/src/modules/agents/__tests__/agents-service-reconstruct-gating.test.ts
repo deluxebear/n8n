@@ -106,8 +106,6 @@ function makeReconstructionService(
 		mock<AgentFileRepository>(),
 		mock<ActiveExecutions>(),
 		mock<WorkflowRepository>(),
-		mock<UserRepository>(),
-		mock<WorkflowFinderService>(),
 		mock<UrlService>(),
 		overrides.n8nCheckpointStorage ?? mock<N8NCheckpointStorage>(),
 		secureRuntime,
@@ -124,6 +122,7 @@ function makeReconstructionService(
 		mock<SsrfProtectionConfig>({ enabled: true }),
 		mock<SsrfProtectionService>(),
 		mock<CredentialsFinderService>(),
+		mock<WorkflowFinderService>(),
 	);
 }
 
@@ -171,7 +170,7 @@ describe('AgentRuntimeReconstructionService.reconstructFromAgentEntity — MCP w
 		const { service, credentialProvider } = setup();
 		const entity = makeAgentEntity();
 
-		await service.reconstructFromAgentEntity(entity, credentialProvider, 'user-1');
+		await service.reconstructFromAgentEntity(entity, credentialProvider);
 
 		expect(buildMcpClientForServerMock).not.toHaveBeenCalled();
 	});
@@ -195,7 +194,7 @@ describe('AgentRuntimeReconstructionService.reconstructFromAgentEntity — MCP w
 			],
 		});
 
-		await service.reconstructFromAgentEntity(entity, credentialProvider, 'user-1');
+		await service.reconstructFromAgentEntity(entity, credentialProvider);
 
 		expect(buildMcpClientForServerMock).toHaveBeenCalledTimes(2);
 		expect(buildMcpClientForServerMock.mock.calls[0][0]).toMatchObject({ name: 'github' });
@@ -235,7 +234,7 @@ describe('AgentRuntimeReconstructionService.reconstructFromAgentEntity — sub-a
 		const { service, credentialProvider } = setup();
 		const entity = makeAgentEntity(undefined, subAgents !== undefined ? { subAgents } : {});
 
-		await service.reconstructFromAgentEntity(entity, credentialProvider, 'user-1');
+		await service.reconstructFromAgentEntity(entity, credentialProvider);
 
 		const toolNames = getInjectedToolNames();
 		expect(toolNames).toContain(DELEGATE_SUB_AGENT_TOOL_NAME);
@@ -298,7 +297,7 @@ describe('AgentRuntimeReconstructionService.reconstructFromAgentEntity — sub-a
 		const credentialProvider = mock<CredentialProvider>();
 		const service = makeReconstructionService();
 
-		await service.reconstructFromAgentEntity(makeAgentEntity(), credentialProvider, 'user-1');
+		await service.reconstructFromAgentEntity(makeAgentEntity(), credentialProvider);
 
 		expect(getInjectedDelegatePolicy()).toMatchObject({
 			maxChildren: SUB_AGENT_MAX_CHILDREN_DEFAULT,
@@ -310,7 +309,7 @@ describe('AgentRuntimeReconstructionService.reconstructFromAgentEntity — sub-a
 		const service = makeReconstructionService();
 		const entity = makeAgentEntity(undefined, { subAgents: { maxChildren: 2 } });
 
-		await service.reconstructFromAgentEntity(entity, credentialProvider, 'user-1');
+		await service.reconstructFromAgentEntity(entity, credentialProvider);
 
 		expect(getInjectedDelegatePolicy()).toMatchObject({
 			maxChildren: 2,
@@ -337,7 +336,7 @@ describe('AgentRuntimeReconstructionService.reconstructFromAgentEntity — sub-a
 			},
 		});
 
-		await service.reconstructFromAgentEntity(entity, credentialProvider, 'user-1');
+		await service.reconstructFromAgentEntity(entity, credentialProvider);
 
 		expect(getInjectedAvailableSubAgents()).toEqual([
 			{
@@ -413,7 +412,7 @@ describe('AgentRuntimeReconstructionService.reconstructFromAgentEntity — sub-a
 			},
 		});
 
-		await service.reconstructFromAgentEntity(entity, credentialProvider, 'user-1');
+		await service.reconstructFromAgentEntity(entity, credentialProvider);
 
 		expect(getInjectedInlineSubAgentModelsByDifficulty()).toEqual({
 			low: {
@@ -449,7 +448,7 @@ describe('AgentRuntimeReconstructionService.reconstructFromAgentEntity — sub-a
 			},
 		);
 
-		await service.reconstructFromAgentEntity(entity, credentialProvider, 'user-1');
+		await service.reconstructFromAgentEntity(entity, credentialProvider);
 
 		const resolveInlineSubAgentProviderTools = getInjectedResolveInlineSubAgentProviderTools();
 		expect(resolveInlineSubAgentProviderTools).toBeDefined();
@@ -466,7 +465,7 @@ describe('AgentRuntimeReconstructionService.reconstructFromAgentEntity — sub-a
 		const credentialProvider = mock<CredentialProvider>();
 		const service = makeReconstructionService();
 
-		await service.reconstructFromAgentEntity(makeAgentEntity(), credentialProvider, 'user-1');
+		await service.reconstructFromAgentEntity(makeAgentEntity(), credentialProvider);
 
 		expect(getInjectedInlineSubAgentModelsByDifficulty()).toBeUndefined();
 	});
@@ -499,12 +498,7 @@ describe('AgentRuntimeReconstructionService.reconstructFromAgentEntity — n8n c
 		// Agent entity with NO credential integrations connected.
 		const entity = makeAgentEntity();
 
-		await service.reconstructFromAgentEntity(
-			entity,
-			credentialProvider,
-			'user-1',
-			N8N_CHAT_INTEGRATION_TYPE,
-		);
+		await service.reconstructFromAgentEntity(entity, credentialProvider, N8N_CHAT_INTEGRATION_TYPE);
 
 		const toolNames = getInjectedToolNames();
 		expect(toolNames).toContain(N8N_CHAT_ACTION_TOOL_NAME);
@@ -516,7 +510,7 @@ describe('AgentRuntimeReconstructionService.reconstructFromAgentEntity — n8n c
 		// Same entity, reconstruct WITHOUT integrationType.
 		const entity = makeAgentEntity();
 
-		await service.reconstructFromAgentEntity(entity, credentialProvider, 'user-1');
+		await service.reconstructFromAgentEntity(entity, credentialProvider);
 
 		const toolNames = getInjectedToolNames();
 		expect(toolNames).not.toContain(N8N_CHAT_ACTION_TOOL_NAME);
@@ -527,7 +521,7 @@ describe('AgentRuntimeReconstructionService.reconstructFromAgentEntity — n8n c
 		const { service, credentialProvider } = setup();
 		const entity = makeAgentEntity();
 
-		await service.reconstructFromAgentEntity(entity, credentialProvider, 'user-1', 'slack');
+		await service.reconstructFromAgentEntity(entity, credentialProvider, 'slack');
 
 		const toolNames = getInjectedToolNames();
 		expect(toolNames).not.toContain(N8N_CHAT_ACTION_TOOL_NAME);
@@ -552,7 +546,7 @@ describe('AgentRuntimeReconstructionService.reconstructFromAgentEntity — check
 		const credentialProvider = mock<CredentialProvider>();
 		const service = makeReconstructionService([], { n8nCheckpointStorage });
 
-		await service.reconstructFromAgentEntity(makeAgentEntity(), credentialProvider, 'user-1');
+		await service.reconstructFromAgentEntity(makeAgentEntity(), credentialProvider);
 
 		expect(n8nCheckpointStorage.getStorage).toHaveBeenCalledWith('agent-1');
 		expect(builtAgent.checkpoint).toHaveBeenCalledWith(scopedStorage);
@@ -584,7 +578,6 @@ describe('AgentRuntimeReconstructionService.reconstructFromResolvedSource — su
 			toolDescriptors: {},
 			toolCodeByName: {},
 			skills: {},
-			userId: 'user-1',
 			runtimeProfile: 'sub-agent',
 			parentAgentIdForDelegation: 'parent-agent-1',
 		});

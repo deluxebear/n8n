@@ -272,7 +272,6 @@ export class AgentExecutionOrchestratorService {
 		const runtime = await this.runtimeCacheService.getRuntime({
 			agentId,
 			projectId,
-			...(user ? { n8nUserId: user.id } : {}),
 			usePublishedVersion,
 			integrationType,
 			// `usePublishedVersion` defaults to true and is what platform
@@ -315,7 +314,7 @@ export class AgentExecutionOrchestratorService {
 					agentId,
 					agentName: agentInstance.name,
 					projectId,
-					userMessage: '',
+					userMessage: null,
 					record: messageRecord,
 					hitlStatus: recorder.suspended ? 'suspended' : 'resumed',
 					telemetry: {
@@ -344,7 +343,6 @@ export class AgentExecutionOrchestratorService {
 		const runtime = await this.runtimeCacheService.getRuntime({
 			agentId,
 			projectId,
-			n8nUserId: user.id,
 			integrationType: N8N_CHAT_INTEGRATION_TYPE,
 			user,
 		});
@@ -560,7 +558,6 @@ export class AgentExecutionOrchestratorService {
 	async compileIsolated(
 		agentEntity: Agent,
 		credentialProvider: CredentialProvider,
-		userId: string,
 		outputSchema?: JSONSchema7,
 		extraTools?: BuiltTool[],
 	): Promise<{ ok: boolean; agent?: BuiltAgent; error?: string }> {
@@ -580,7 +577,6 @@ export class AgentExecutionOrchestratorService {
 				await this.agentRuntimeReconstructionService.reconstructFromAgentEntity(
 					agentEntity,
 					credentialProvider,
-					userId,
 				);
 			// Apply a per-call structured-output schema before casting to runtime.
 			if (outputSchema) {
@@ -621,7 +617,6 @@ export class AgentExecutionOrchestratorService {
 		message: string,
 		executionId: string,
 		threadId: string,
-		userId: string,
 		projectId: string,
 		telemetryUserId?: string,
 		useDraftVersion?: boolean,
@@ -652,7 +647,6 @@ export class AgentExecutionOrchestratorService {
 		const compiled = await this.compileIsolated(
 			agentData,
 			credentialProvider,
-			userId,
 			outputSchema,
 			extraTools.length ? extraTools : undefined,
 		);

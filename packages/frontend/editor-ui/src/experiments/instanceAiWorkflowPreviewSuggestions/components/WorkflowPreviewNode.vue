@@ -13,8 +13,9 @@ const props = withDefaults(
 		state?: NodeAnimationState;
 		trigger?: boolean;
 		iconOverride?: PreviewWorkflowNodeIcon;
+		interactive?: boolean;
 	}>(),
-	{ state: 'idle', trigger: false },
+	{ state: 'idle', trigger: false, interactive: false },
 );
 
 const style = computed(() => ({
@@ -48,7 +49,7 @@ const iconLightInvert = computed(() => activeIcon.value.lightInvert === true);
 			props.state === 'running' && $style.running,
 			props.state === 'success' && $style.success,
 		]"
-		:style="style"
+		:style="[style, props.interactive ? { pointerEvents: 'auto' } : {}]"
 	>
 		<div :class="$style.iconWrapper" :style="iconWrapperStyle">
 			<N8nIcon v-if="iconName" :icon="iconName" :size="48" />

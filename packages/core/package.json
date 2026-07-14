@@ -1,6 +1,6 @@
 {
   "name": "n8n-core",
-  "version": "2.29.8",
+  "version": "2.30.2",
   "description": "Core functionality of n8n",
   "main": "dist/index",
   "types": "dist/index.d.ts",
@@ -46,9 +46,9 @@
     "@n8n/vitest-config": "workspace:*",
     "@vitest/coverage-v8": "catalog:",
     "axios": "catalog:",
-    "jest-mock-extended": "^3.0.4",
     "nock": "catalog:",
     "reflect-metadata": "catalog:",
+    "vite": "catalog:",
     "vitest": "catalog:",
     "vitest-mock-extended": "catalog:",
     "zod": "catalog:"
@@ -69,6 +69,7 @@
     "@n8n/decorators": "workspace:*",
     "@n8n/di": "workspace:*",
     "@n8n/errors": "workspace:*",
+    "@n8n/utils": "workspace:*",
     "@sentry/core": "catalog:sentry",
     "@sentry/node": "catalog:sentry",
     "@sentry/node-native": "catalog:sentry",

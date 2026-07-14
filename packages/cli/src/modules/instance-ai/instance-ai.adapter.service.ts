@@ -34,12 +34,14 @@ import type {
 	FolderSummary,
 	ServiceProxyConfig,
 	CredentialTypeSearchResult,
+	CredentialHostInfo,
 } from '@n8n/instance-ai';
 import { braveSearch, searxngSearch, type WebSearchResponse } from '@n8n/ai-utilities';
 import {
 	BuilderTemplatesService,
 	builderTemplatesOptionsFromEnv,
 	wrapUntrustedData,
+	deriveCredentialHosts,
 } from '@n8n/instance-ai';
 import type { WorkflowJSON } from '@n8n/workflow-sdk';
 import { GlobalConfig } from '@n8n/config';
@@ -69,7 +71,7 @@ import {
 import { Logger } from '@n8n/backend-common';
 import { OutboundHttp, SsrfProtectionService } from '@n8n/backend-network';
 import { Container, Service } from '@n8n/di';
-import { hasGlobalScope, PROJECT_OWNER_ROLE_SLUG, type Scope } from '@n8n/permissions';
+import { hasGlobalScope, type Scope } from '@n8n/permissions';
 // eslint-disable-next-line n8n-local-rules/misplaced-n8n-typeorm-import
 import { LessThan } from '@n8n/typeorm';
 import {
@@ -95,6 +97,7 @@ import {
 	TimeoutExecutionCancelledError,
 	UnexpectedError,
 	jsonParse,
+	createRunExecutionData,
 } from 'n8n-workflow';
 
 import { ActiveExecutions } from '@/active-executions';
@@ -111,6 +114,7 @@ import { DataTableService } from '@/modules/data-table/data-table.service';
 import { MCP_REGISTRY_PACKAGE_NAME } from '@/modules/mcp-registry/node-description-transform';
 import { SourceControlPreferencesService } from '@/modules/source-control.ee/source-control-preferences.service.ee';
 import { userHasScopes } from '@/permissions.ee/check-access';
+import { AiGatewayService } from '@/services/ai-gateway.service';
 import { FolderService } from '@/services/folder.service';
 import { NodeResourceExplorerService } from '@/services/node-resource-explorer.service';
 import { ProjectService } from '@/services/project.service.ee';
@@ -161,6 +165,10 @@ function resolveDisplayedDefaults(
 	return resolved ?? (parameters as INodeParameters);
 }
 
+// Credential types are loaded once at boot, so the derived host index is
+// process-global and safe to memoize across users.
+let httpCredentialHostsCache: CredentialHostInfo[] | undefined;
+
 @Service()
 export class InstanceAiAdapterService {
 	private readonly logger: Logger;
@@ -199,7 +207,7 @@ export class InstanceAiAdapterService {
 
 	constructor(
 		logger: Logger,
-		globalConfig: GlobalConfig,
+		private readonly globalConfig: GlobalConfig,
 		private readonly workflowService: WorkflowService,
 		private readonly workflowFinderService: WorkflowFinderService,
 		private readonly workflowRepository: WorkflowRepository,
@@ -231,6 +239,7 @@ export class InstanceAiAdapterService {
 		private readonly aiBuilderTemporaryWorkflowRepository: AiBuilderTemporaryWorkflowRepository,
 		private readonly ssrfProtectionService: SsrfProtectionService,
 		private readonly outboundHttp: OutboundHttp,
+		private readonly aiGatewayService: AiGatewayService,
 		private readonly nodeCatalogService?: NodeCatalogService,
 	) {
 		this.logger = logger.scoped('instance-ai');
@@ -483,12 +492,14 @@ export class InstanceAiAdapterService {
 				});
 			},
 
-			async getAsWorkflowJSON(workflowId: string) {
+			async getAsWorkflowJSON(workflowId: string, versionId?: string) {
 				const wf = await workflowFinderService.findWorkflowForUser(workflowId, user, [
 					'workflow:read',
 				]);
 				if (!wf) throw new Error(`Workflow ${workflowId} not found or not accessible`);
-				return toWorkflowJSON(wf, { redactParameters });
+				if (!versionId) return toWorkflowJSON(wf, { redactParameters });
+				const version = await workflowHistoryService.getVersion(user, workflowId, versionId);
+				return toWorkflowJSON(wf, { redactParameters, graph: version });
 			},
 
 			async getWorkflowHead(workflowId: string) {
@@ -773,6 +784,7 @@ export class InstanceAiAdapterService {
 						(n): WorkflowNode => ({
 							name: n.name,
 							type: n.type,
+							typeVersion: n.typeVersion,
 							parameters: redactParameters ? undefined : (n.parameters as Record<string, unknown>),
 							position: n.position,
 						}),
@@ -823,10 +835,10 @@ export class InstanceAiAdapterService {
 			executionRepository,
 			nodeTypes,
 			allowSendingParameterValues,
-			license,
 			roleService,
 			telemetry,
 			logger,
+			globalConfig,
 		} = this;
 		const assertNotReadOnly = () => this.assertInstanceNotReadOnly('executions');
 
@@ -862,17 +874,15 @@ export class InstanceAiAdapterService {
 			async list(options) {
 				const scope: Scope = 'workflow:read';
 
-				let sharingOptions: ExecutionSummaries.RangeQuery['sharingOptions'];
-				if (license.isSharingEnabled()) {
-					const projectRoles = await roleService.rolesWithScope('project', [scope]);
-					const workflowRoles = await roleService.rolesWithScope('workflow', [scope]);
-					sharingOptions = { scopes: [scope], projectRoles, workflowRoles };
-				} else {
-					sharingOptions = {
-						workflowRoles: ['workflow:owner'],
-						projectRoles: [PROJECT_OWNER_ROLE_SLUG],
-					};
-				}
+				// Visibility from role scopes, not the sharing license — mirrors
+				// ExecutionService.buildSharingOptions and the REST executions list.
+				const projectRoles = await roleService.rolesWithScope('project', [scope]);
+				const workflowRoles = await roleService.rolesWithScope('workflow', [scope]);
+				const sharingOptions: ExecutionSummaries.RangeQuery['sharingOptions'] = {
+					scopes: [scope],
+					projectRoles,
+					workflowRoles,
+				};
 
 				const query: ExecutionSummaries.RangeQuery = {
 					kind: 'range' as const,
@@ -980,6 +990,31 @@ export class InstanceAiAdapterService {
 				runData.telemetryMetadata = {
 					mockDataSources: pinDataPlan.mockDataSources,
 				};
+
+				// When manual executions are offloaded to workers (queue mode), the worker
+				// rebuilds the run from the persisted `execution.data`. The adapter's manual
+				// run details otherwise live in transient top-level fields that don't survive
+				// serialization, so wrap them into `executionData` — mirroring
+				// `workflow-execution.service`. A trigger run already carries its stack in
+				// `executionData`, so only wrap when it's absent.
+				const offloadingManualExecutionsInQueueMode =
+					globalConfig.executions?.mode === 'queue' &&
+					process.env.OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS === 'true';
+				if (
+					runData.executionMode === 'manual' &&
+					offloadingManualExecutionsInQueueMode &&
+					!runData.executionData
+				) {
+					runData.executionData = createRunExecutionData({
+						startData: { startNodes: runData.startNodes },
+						resultData: { pinData: runData.pinData, runData: null },
+						manualData: {
+							userId: runData.userId,
+							triggerToStartFrom: runData.triggerToStartFrom,
+						},
+						executionData: null,
+					});
+				}
 
 				const trackBuilderExecutedWorkflow = (
 					status: ExecutionResult['status'],
@@ -1166,7 +1201,12 @@ export class InstanceAiAdapterService {
 		boundProjectId?: string,
 		credentialIdAllowlist?: string[],
 	): InstanceAiCredentialService {
-		const { credentialsService, credentialsFinderService, loadNodesAndCredentials } = this;
+		const {
+			credentialsService,
+			credentialsFinderService,
+			loadNodesAndCredentials,
+			aiGatewayService,
+		} = this;
 
 		const adapter: InstanceAiCredentialService = {
 			async list(options) {
@@ -1388,6 +1428,39 @@ export class InstanceAiAdapterService {
 				return results;
 			},
 
+			async listHttpCredentialHosts(): Promise<CredentialHostInfo[]> {
+				if (httpCredentialHostsCache) return httpCredentialHostsCache;
+
+				const { knownCredentials } = loadNodesAndCredentials;
+				const result: CredentialHostInfo[] = [];
+
+				for (const typeName of Object.keys(knownCredentials)) {
+					let credType;
+					try {
+						credType = loadNodesAndCredentials.getCredential(typeName).type;
+					} catch {
+						// Type not loadable — skip.
+						continue;
+					}
+
+					// Only credentials selectable in the HTTP node (authenticate / OAuth).
+					const usableInHttpNode =
+						Boolean(credType.authenticate) ||
+						(knownCredentials[typeName]?.extends ?? []).some(
+							(parent) => parent === 'oAuth2Api' || parent === 'oAuth1Api',
+						);
+					if (!usableInHttpNode) continue;
+
+					const hosts = deriveCredentialHosts(credType);
+					if (hosts.length === 0) continue;
+
+					result.push({ type: typeName, displayName: credType.displayName, hosts });
+				}
+
+				httpCredentialHostsCache = result;
+				return result;
+			},
+
 			async getAccountContext(credentialId: string) {
 				const credential = await credentialsFinderService.findCredentialForUser(
 					credentialId,
@@ -1445,6 +1518,17 @@ export class InstanceAiAdapterService {
 					return { accountIdentifier: undefined };
 				} catch {
 					return { accountIdentifier: undefined };
+				}
+			},
+
+			async isAiGatewayCredentialType(credType: string): Promise<boolean> {
+				try {
+					const config = await aiGatewayService.getGatewayConfig();
+					return config.credentialTypes.includes(credType);
+				} catch {
+					// Fail open if the gateway config is unavailable — the credential
+					// type check is a best-effort validation, not a security gate.
+					return false;
 				}
 			},
 		};
@@ -2265,7 +2349,16 @@ export class InstanceAiAdapterService {
 				const workflowNode = workflow.getNode(nodeName);
 				if (!workflowNode) return [];
 
-				return NodeHelpers.getNodeInputs(workflow, workflowNode, nodeType.description);
+				// Dynamic `inputs` expressions resolve via workflow.expression, which
+				// needs a V8 isolate acquired for this workflow when
+				// N8N_EXPRESSION_ENGINE=vm — otherwise the VM bridge throws "No bridge
+				// acquired" and getNodeInputs silently returns []. No-op in legacy mode.
+				await workflow.expression.acquireIsolate();
+				try {
+					return NodeHelpers.getNodeInputs(workflow, workflowNode, nodeType.description);
+				} finally {
+					await workflow.expression.releaseIsolate();
+				}
 			},
 
 			exploreResources: async (params: ExploreResourcesParams): Promise<ExploreResourcesResult> =>
@@ -2983,6 +3076,9 @@ function sdkNodeGroupsToRuntime(
 
 function hasCredentialId(value: unknown): boolean {
 	if (typeof value !== 'object' || value === null) return false;
+	if (Reflect.get(value, 'id') === null && Reflect.get(value, '__aiGatewayManaged') === true) {
+		return true;
+	}
 	const id = Reflect.get(value, 'id');
 	return typeof id === 'string' && id.trim() !== '';
 }
@@ -3014,13 +3110,18 @@ function sanitizeCredentialReferencesForSave(nodes: WorkflowJSON['nodes']): Work
 
 function toWorkflowJSON(
 	workflow: WorkflowEntity,
-	options?: { redactParameters?: boolean },
+	options?: {
+		redactParameters?: boolean;
+		/** Substitute a history version's graph; id/name/settings stay from the live entity, as history rows only carry a version label. */
+		graph?: Pick<WorkflowEntity, 'nodes' | 'connections' | 'nodeGroups'>;
+	},
 ): WorkflowJSON {
 	const redact = options?.redactParameters ?? false;
+	const source = options?.graph ?? workflow;
 	return {
 		id: workflow.id,
 		name: workflow.name,
-		nodes: (workflow.nodes ?? []).map((n) => ({
+		nodes: (source.nodes ?? []).map((n) => ({
 			id: n.id ?? '',
 			name: n.name,
 			type: n.type,
@@ -3037,9 +3138,9 @@ function toWorkflowJSON(
 			alwaysOutputData: n.alwaysOutputData,
 			onError: n.onError,
 		})),
-		connections: workflow.connections as WorkflowJSON['connections'],
+		connections: source.connections as WorkflowJSON['connections'],
 		settings: workflow.settings as WorkflowJSON['settings'],
-		...(workflow.nodeGroups ? { nodeGroups: workflow.nodeGroups } : {}),
+		...(source.nodeGroups ? { nodeGroups: source.nodeGroups } : {}),
 	};
 }
 
@@ -3060,6 +3161,7 @@ function toWorkflowDetail(
 			(n): WorkflowNode => ({
 				name: n.name,
 				type: n.type,
+				typeVersion: n.typeVersion,
 				parameters: redact ? undefined : n.parameters,
 				position: n.position,
 				webhookId: n.webhookId,

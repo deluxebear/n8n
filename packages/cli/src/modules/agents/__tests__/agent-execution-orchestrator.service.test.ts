@@ -206,7 +206,6 @@ describe('AgentExecutionOrchestratorService', () => {
 		expect(runtimeCacheService.getRuntime).toHaveBeenCalledWith({
 			agentId,
 			projectId,
-			n8nUserId: userId,
 			integrationType: N8N_CHAT_INTEGRATION_TYPE,
 			user,
 		});
@@ -378,7 +377,13 @@ describe('AgentExecutionOrchestratorService', () => {
 		const { service, executionService } = makeService();
 		executionService.getThreadDetail.mockResolvedValue({
 			thread: { id: 'thread-1' },
-			executions: [{ id: 'execution-1', userMessage: 'Hi', assistantResponse: 'Hello' }],
+			executions: [
+				{
+					id: 'execution-1',
+					userMessage: 'Hi',
+					timeline: [{ type: 'text', content: 'Hello', timestamp: 100 }],
+				},
+			],
 		} as never);
 
 		await expect(
@@ -436,7 +441,7 @@ describe('AgentExecutionOrchestratorService', () => {
 		expect(executionService.recordMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				threadId: 'thread-1',
-				userMessage: '',
+				userMessage: null,
 				hitlStatus: 'resumed',
 				telemetry: {
 					runType: 'production',
@@ -475,7 +480,7 @@ describe('AgentExecutionOrchestratorService', () => {
 		);
 
 		expect(executionService.recordMessage).toHaveBeenCalledWith(
-			expect.objectContaining({ threadId: 'thread-1', userMessage: '', hitlStatus: 'suspended' }),
+			expect.objectContaining({ threadId: 'thread-1', userMessage: null, hitlStatus: 'suspended' }),
 		);
 	});
 
@@ -496,7 +501,6 @@ describe('AgentExecutionOrchestratorService', () => {
 			'hello',
 			'execution-1',
 			'thread-1',
-			userId,
 			projectId,
 			userId,
 		);
@@ -553,7 +557,6 @@ describe('AgentExecutionOrchestratorService', () => {
 				'hello',
 				'execution-1',
 				'thread-1',
-				userId,
 				projectId,
 				userId,
 				false,
@@ -601,7 +604,6 @@ describe('AgentExecutionOrchestratorService', () => {
 				'hello',
 				'execution-1',
 				'thread-1',
-				userId,
 				projectId,
 				undefined,
 				undefined,
@@ -625,7 +627,6 @@ describe('AgentExecutionOrchestratorService', () => {
 				'hello',
 				'execution-1',
 				'thread-1',
-				userId,
 				projectId,
 				undefined,
 				undefined,
@@ -639,14 +640,7 @@ describe('AgentExecutionOrchestratorService', () => {
 		it('injects no tools without workflowContext', async () => {
 			const { service, toolFn } = setupRuntimeWithToolSpy();
 
-			await service.executeForWorkflow(
-				agentId,
-				'hello',
-				'execution-1',
-				'thread-1',
-				userId,
-				projectId,
-			);
+			await service.executeForWorkflow(agentId, 'hello', 'execution-1', 'thread-1', projectId);
 
 			expect(toolFn).not.toHaveBeenCalled();
 		});
@@ -664,7 +658,6 @@ describe('AgentExecutionOrchestratorService', () => {
 					'hello',
 					'execution-1',
 					'thread-1',
-					userId,
 					projectId,
 					undefined,
 					undefined,
@@ -696,7 +689,6 @@ describe('AgentExecutionOrchestratorService', () => {
 			'hello',
 			'execution-1',
 			'thread-1',
-			userId,
 			projectId,
 			userId,
 			false,

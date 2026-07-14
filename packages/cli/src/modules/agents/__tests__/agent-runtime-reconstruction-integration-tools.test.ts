@@ -13,7 +13,6 @@ import type {
 	User,
 	CredentialsEntity,
 	ProjectRelationRepository,
-	UserRepository,
 	WorkflowRepository,
 } from '@n8n/db';
 import { Container } from '@n8n/di';
@@ -115,8 +114,6 @@ function makeRuntimeReconstructionService(
 		mock<AgentFileRepository>(),
 		mock<ActiveExecutions>(),
 		mock<WorkflowRepository>(),
-		mock<UserRepository>(),
-		mock<WorkflowFinderService>(),
 		mock<UrlService>(),
 		mock<N8NCheckpointStorage>(),
 		mock<AgentSecureRuntime>(),
@@ -130,6 +127,7 @@ function makeRuntimeReconstructionService(
 		mock<SsrfProtectionConfig>({ enabled: true }),
 		mock<SsrfProtectionService>(),
 		mock<CredentialsFinderService>(),
+		mock<WorkflowFinderService>(),
 	);
 }
 
@@ -345,7 +343,6 @@ describe('AgentRuntimeReconstructionService integration tools', () => {
 						agentId: string;
 						projectId: string;
 						credentialProvider: unknown;
-						userId: string;
 						runtimeProfile: 'top-level';
 						config: AgentJsonConfig;
 						subAgentDelegation: {
@@ -361,7 +358,6 @@ describe('AgentRuntimeReconstructionService integration tools', () => {
 				agentId,
 				projectId,
 				credentialProvider: mock(),
-				userId: 'user-1',
 				runtimeProfile: 'top-level',
 				config: {
 					name: 'Test Agent',

@@ -5,7 +5,6 @@ import { Time } from '@n8n/constants';
 import type { User } from '@n8n/db';
 import { OnPubSubEvent } from '@n8n/decorators';
 import { Service } from '@n8n/di';
-import { UserError } from 'n8n-workflow';
 
 import { CredentialsService } from '@/credentials/credentials.service';
 import { NotFoundError } from '@/errors/response-errors/not-found.error';
@@ -25,9 +24,8 @@ import { getPublishedAgentSnapshot } from './utils/agent-published-snapshot';
 export interface GetRuntimeParams {
 	agentId: string;
 	projectId: string;
-	n8nUserId?: string;
 	integrationType?: string;
-	/** When true, load the published snapshot; n8nUserId is derived from publishedById when omitted. */
+	/** When true, load the published snapshot. */
 	usePublishedVersion?: boolean;
 	/**
 	 * The calling n8n user. When present, the runtime is built with node/workflow
@@ -92,7 +90,6 @@ export class AgentRuntimeCacheService {
 			return parts.join(':');
 		}
 		const parts = [params.agentId, 'draft'];
-		if (params.n8nUserId) parts.push(params.n8nUserId);
 		if (params.integrationType) parts.push(params.integrationType);
 		// Per-user runtimes have node/workflow tools filtered by that user's
 		// access — keying by user id keeps them from colliding with each other
@@ -216,19 +213,9 @@ export class AgentRuntimeCacheService {
 		const agentEntity = await this.agentRepository.findByIdAndProjectId(agentId, projectId);
 		if (!agentEntity) throw new NotFoundError(`Agent ${agentId} not found`);
 
-		let n8nUserId = params.n8nUserId;
-		let agentData: Agent = agentEntity;
-
-		if (usePublishedVersion) {
-			agentData = getPublishedAgentSnapshot(agentEntity);
-
-			// Resolve n8n user from publishedById when not provided by the caller.
-			n8nUserId ??= agentEntity.activeVersion?.publishedById ?? undefined;
-		}
-
-		if (!n8nUserId) {
-			throw new UserError('Agent user owner id is required');
-		}
+		const agentData: Agent = usePublishedVersion
+			? getPublishedAgentSnapshot(agentEntity)
+			: agentEntity;
 
 		// `user` here is whatever `computeRuntimeCacheKey` above already keyed
 		// this build on — undefined for published/integration runs, set for
@@ -245,7 +232,6 @@ export class AgentRuntimeCacheService {
 			await this.agentRuntimeReconstructionService.reconstructFromAgentEntity(
 				agentData,
 				credentialProvider,
-				n8nUserId,
 				integrationType,
 				user,
 			);

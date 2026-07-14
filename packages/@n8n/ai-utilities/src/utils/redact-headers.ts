@@ -1,10 +1,6 @@
+import type { SerializedFields } from '@langchain/core/dist/load/map_keys';
 import type { SerializedNotImplemented, SerializedSecret } from '@langchain/core/load/serializable';
-import { isRecord } from '@n8n/utils';
-
-interface SerializedFields {
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	[key: string]: any;
-}
+import { isRecord } from '@n8n/utils/is-record';
 
 type SerializedOptions = SerializedSecret | SerializedNotImplemented | SerializedFields;
 

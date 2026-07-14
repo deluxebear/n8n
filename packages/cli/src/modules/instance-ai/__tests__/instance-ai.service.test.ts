@@ -150,6 +150,7 @@ vi.mock('@n8n/instance-ai', async () => {
 			}
 		},
 		resumeAgentRun: vi.fn(),
+		createInstanceAiTraceContext: vi.fn(async () => ({ rootRun: { otelTraceId: undefined } })),
 		TerminalOutcomeStorage: class {
 			constructor(_memory: unknown) {}
 		},
@@ -164,6 +165,7 @@ import {
 	createAllTools,
 	createLazyRuntimeWorkspace,
 	createLazyWorkspaceRuntimeSkillSource,
+	createOrchestratorRunControl,
 	createSandbox,
 	createWorkspace,
 	loadInstanceAiRuntimeSkillSource,
@@ -459,12 +461,14 @@ type CheckpointPruneServiceInternals = {
 	scheduleCheckpointPrune: MockedFunction<(delayMs?: number) => void>;
 	checkpointStore: {
 		markExpiredOlderThan: MockedFunction<(olderThan: Date) => Promise<number>>;
+		hardDeleteExpiredOlderThan: MockedFunction<(olderThan: Date) => Promise<number>>;
 	};
 	checkpointPruneTimer?: NodeJS.Timeout;
 	checkpointPruningStopped: boolean;
 	instanceAiConfig: {
 		pruneInterval: number;
 		snapshotRetention: number;
+		checkpointGcRetention: number;
 	};
 	logger: { info: Mock; debug: Mock; warn: Mock };
 };
@@ -480,11 +484,13 @@ function createCheckpointPruneService(): CheckpointPruneServiceInternals {
 	service.pruneExpiredThreads = vi.fn(async () => undefined);
 	service.checkpointStore = {
 		markExpiredOlderThan: vi.fn(async (_olderThan: Date) => 0),
+		hardDeleteExpiredOlderThan: vi.fn(async (_olderThan: Date) => 0),
 	};
 	service.checkpointPruningStopped = true;
 	service.instanceAiConfig = {
 		pruneInterval: 60 * 60 * 1000,
-		snapshotRetention: 7 * 24 * 60 * 60 * 1000,
+		snapshotRetention: 24 * 60 * 60 * 1000,
+		checkpointGcRetention: 7 * 24 * 60 * 60 * 1000,
 	};
 	service.logger = {
 		info: vi.fn(),
@@ -495,6 +501,19 @@ function createCheckpointPruneService(): CheckpointPruneServiceInternals {
 }
 
 const fakeUser = { id: 'user-1' } as User;
+
+function createInstanceAiErrorReporterMock() {
+	return {
+		report: vi.fn(),
+		beginRun: vi.fn(),
+		endRun: vi.fn(),
+		endAllRuns: vi.fn(),
+		withBoundary: vi.fn(
+			async (_component: string, _context: unknown, fn: () => Promise<unknown>) => await fn(),
+		),
+	};
+}
+
 type ShutdownServiceInternals = {
 	shutdown: () => Promise<void>;
 	stopCheckpointPruning: MockedFunction<() => void>;
@@ -533,6 +552,7 @@ type ShutdownServiceInternals = {
 	_mcpClientManager?: { disconnect: MockedFunction<() => Promise<void>> };
 	inFlightExecutions: Set<Promise<unknown>>;
 	logger: { debug: Mock; warn: Mock };
+	instanceAiErrorReporter: ReturnType<typeof createInstanceAiErrorReporterMock>;
 };
 
 type TerminalGuardOrderServiceInternals = {
@@ -556,8 +576,7 @@ type TerminalGuardOrderServiceInternals = {
 	telemetry: { track: Mock };
 	suspendedThreads: { dropPendingConfirmationsForThread: Mock; persistPendingConfirmation: Mock };
 	logger: { warn: Mock; error: Mock };
-	errorReporter: { error: Mock };
-	reportedErrors: WeakSet<object>;
+	instanceAiErrorReporter: ReturnType<typeof createInstanceAiErrorReporterMock>;
 	instanceAiConfig: {
 		outputRedactionEnabled: boolean;
 		outputRedactionSecrets: boolean;
@@ -577,6 +596,9 @@ type TerminalGuardOrderServiceInternals = {
 	creditService: { claimRunUsage: Mock };
 	schedulePlannedTasks: Mock;
 	drainPendingCheckpointReentries: Mock;
+	taskProjector: { syncFromWorkflowLoop: Mock };
+	maybeStartWorkflowSetupFollowUp: Mock;
+	finalizeRun: Mock;
 	preserveHitlOnShutdown: Set<string>;
 	processResumedStream: (
 		agent: unknown,
@@ -648,8 +670,7 @@ function createTerminalGuardOrderService(): TerminalGuardOrderServiceInternals {
 		persistPendingConfirmation: vi.fn(async () => {}),
 	};
 	service.logger = { warn: vi.fn(), error: vi.fn() };
-	service.errorReporter = { error: vi.fn() };
-	service.reportedErrors = new WeakSet();
+	service.instanceAiErrorReporter = createInstanceAiErrorReporterMock();
 	service.instanceAiConfig = {
 		outputRedactionEnabled: true,
 		outputRedactionSecrets: true,
@@ -801,6 +822,7 @@ describe('InstanceAiService — runtime workspace setup', () => {
 			domainAccessTrackersByThread: Map<string, unknown>;
 			threadGrantRepo: { findKeys: Mock };
 			evalCredentialAllowlists: EvalThreadCredentialAllowlistService;
+			instanceAiErrorReporter: ReturnType<typeof createInstanceAiErrorReporterMock>;
 		};
 		service.settingsService = {
 			getAdminSettings: vi.fn(() => ({ localGatewayDisabled: false, sandboxEnabled: true })),
@@ -867,6 +889,7 @@ describe('InstanceAiService — runtime workspace setup', () => {
 			aiService: { isProxyEnabled: vi.fn(() => false), getClient: vi.fn() },
 		});
 		service.evalCredentialAllowlists = new EvalThreadCredentialAllowlistService();
+		service.instanceAiErrorReporter = createInstanceAiErrorReporterMock();
 		(createAllTools as Mock).mockReturnValue(new Map());
 		const sandbox = { id: 'sandbox-1' };
 		const workspace = {
@@ -991,6 +1014,7 @@ describe('InstanceAiService — shutdown', () => {
 		service._mcpClientManager = { disconnect: vi.fn(async () => {}) };
 		service.inFlightExecutions = new Set();
 		service.logger = { debug: vi.fn(), warn: vi.fn() };
+		service.instanceAiErrorReporter = createInstanceAiErrorReporterMock();
 
 		await service.shutdown();
 
@@ -1254,12 +1278,42 @@ describe('InstanceAiService — scheduled pruning', () => {
 
 		await service.runScheduledPrune(now);
 
+		// snapshotRetention = 24h → tombstone anything untouched since 05-12
 		expect(service.checkpointStore.markExpiredOlderThan).toHaveBeenCalledWith(
+			new Date('2026-05-12T12:00:00.000Z'),
+		);
+		// checkpointGcRetention = 7d → hard-delete tombstones expired before 05-06
+		expect(service.checkpointStore.hardDeleteExpiredOlderThan).toHaveBeenCalledWith(
 			new Date('2026-05-06T12:00:00.000Z'),
 		);
 		expect(service.suspendedThreads.pruneStalePendingConfirmations).toHaveBeenCalledWith(now);
 		expect(service.pruneExpiredThreads).toHaveBeenCalled();
 		expect(service.scheduleCheckpointPrune).toHaveBeenCalledWith();
+	});
+
+	it('skips hard-deleting tombstones when the GC retention is disabled', async () => {
+		const service = createCheckpointPruneService();
+		service.instanceAiConfig.checkpointGcRetention = 0;
+
+		await service.runScheduledPrune(new Date('2026-05-13T12:00:00.000Z').getTime());
+
+		expect(service.checkpointStore.hardDeleteExpiredOlderThan).not.toHaveBeenCalled();
+		// The rest of the cycle still runs.
+		expect(service.checkpointStore.markExpiredOlderThan).toHaveBeenCalled();
+		expect(service.scheduleCheckpointPrune).toHaveBeenCalledWith();
+	});
+
+	it('continues the prune cycle when hard-deleting tombstones fails', async () => {
+		const service = createCheckpointPruneService();
+		service.checkpointStore.hardDeleteExpiredOlderThan.mockRejectedValueOnce(new Error('db down'));
+
+		await service.runScheduledPrune(new Date('2026-05-13T12:00:00.000Z').getTime());
+
+		// A GC failure is swallowed and never forces the short retry cadence.
+		expect(service.suspendedThreads.pruneStalePendingConfirmations).toHaveBeenCalled();
+		expect(service.pruneExpiredThreads).toHaveBeenCalled();
+		expect(service.scheduleCheckpointPrune).toHaveBeenCalledWith();
+		expect(service.logger.warn).toHaveBeenCalled();
 	});
 
 	it('starts checkpoint pruning when configured', () => {
@@ -1414,11 +1468,13 @@ type ResolveConfirmationServiceInternals = {
 		requestingUserId: string,
 		requestId: string,
 		request: { kind: 'approval'; approved: boolean; userInput?: string },
-	) => Promise<boolean>;
+	) => Promise<{ ok: true; runId?: string } | null>;
 	revalidateActiveUser: Mock<(...args: [string]) => Promise<User | null>>;
 	cancelRun: Mock<(...args: [string]) => void>;
 	runState: {
 		resolvePendingConfirmation: Mock;
+		getPendingConfirmation: Mock;
+		getActiveRunId: Mock;
 		findSuspendedByRequestId: Mock;
 		rejectPendingConfirmation: Mock;
 	};
@@ -1428,6 +1484,9 @@ type ResolveConfirmationServiceInternals = {
 	};
 	suspendedThreads: {
 		dropPendingConfirmation: Mock;
+	};
+	pendingConfirmationRepo: {
+		isPastExpiry: Mock<(...args: [string, string, Date]) => Promise<boolean>>;
 	};
 	logger: { debug: Mock; warn: Mock; error: Mock; info: Mock };
 };
@@ -1440,12 +1499,17 @@ function createResolveConfirmationService(): ResolveConfirmationServiceInternals
 	service.cancelRun = vi.fn();
 	service.runState = {
 		resolvePendingConfirmation: vi.fn(),
+		getPendingConfirmation: vi.fn(),
+		getActiveRunId: vi.fn(),
 		findSuspendedByRequestId: vi.fn(),
 		rejectPendingConfirmation: vi.fn(),
 	};
-	service.resumeSuspendedRun = vi.fn(async () => false);
+	service.pendingConfirmationRepo = {
+		isPastExpiry: vi.fn(async () => false),
+	};
+	service.resumeSuspendedRun = vi.fn(async () => null);
 	service.suspendedRunRestorer = {
-		resolveOrphanedConfirmation: vi.fn(async () => false),
+		resolveOrphanedConfirmation: vi.fn(async () => null),
 	};
 	service.suspendedThreads = {
 		dropPendingConfirmation: vi.fn(async () => {}),
@@ -1534,8 +1598,11 @@ type SuspendedRunResumeServiceInternals = {
 	resumeSuspendedRun: (
 		requestingUserId: string,
 		requestId: string,
-		data: { approved: boolean },
-	) => Promise<boolean>;
+		data: {
+			approved: boolean;
+			autoSetup?: { credentialType: string };
+		},
+	) => Promise<{ ok: true; runId: string } | null>;
 	revalidateActiveUser: Mock<(...args: [string]) => Promise<User | null>>;
 	cancelRun: Mock;
 	runState: {
@@ -1548,6 +1615,8 @@ type SuspendedRunResumeServiceInternals = {
 	processResumedStream: Mock;
 	suspendedThreads: { dropPendingConfirmation: Mock };
 	trackInFlightExecution: Mock;
+	rebuildAgentForAutoSetupResume: Mock;
+	threadPushRef: { get: Mock };
 };
 
 function createSuspendedRunResumeService(): SuspendedRunResumeServiceInternals {
@@ -1573,6 +1642,7 @@ function createSuspendedRunResumeService(): SuspendedRunResumeServiceInternals {
 			modelId: undefined,
 			messageGroupId: 'group-1',
 			checkpoint: undefined,
+			runHandoff: undefined,
 		})),
 		activateSuspendedRun: vi.fn(),
 	};
@@ -1580,6 +1650,8 @@ function createSuspendedRunResumeService(): SuspendedRunResumeServiceInternals {
 	service.dbSnapshotStorage = {};
 	service.tracing = { createOrchestratorResumeTraceContext: vi.fn(async () => undefined) };
 	service.processResumedStream = vi.fn();
+	service.rebuildAgentForAutoSetupResume = vi.fn();
+	service.threadPushRef = { get: vi.fn(() => undefined) };
 	return service;
 }
 
@@ -1593,7 +1665,7 @@ describe('InstanceAiService — resolveConfirmation', () => {
 
 		const result = await service.resolveConfirmation('user-1', 'req-1', approval);
 
-		expect(result).toBe(false);
+		expect(result).toBeNull();
 		expect(service.runState.rejectPendingConfirmation).toHaveBeenCalledWith('req-1');
 		expect(service.runState.resolvePendingConfirmation).not.toHaveBeenCalled();
 		expect(service.cancelRun).not.toHaveBeenCalled();
@@ -1613,7 +1685,7 @@ describe('InstanceAiService — resolveConfirmation', () => {
 
 		const result = await service.resolveConfirmation('user-1', 'req-1', approval);
 
-		expect(result).toBe(false);
+		expect(result).toBeNull();
 		expect(service.runState.rejectPendingConfirmation).toHaveBeenCalledWith('req-1');
 		expect(service.cancelRun).toHaveBeenCalledWith('thread-1');
 	});
@@ -1628,18 +1700,23 @@ describe('InstanceAiService — resolveConfirmation', () => {
 
 		const result = await service.resolveConfirmation('user-1', 'req-1', approval);
 
-		expect(result).toBe(false);
+		expect(result).toBeNull();
 		expect(service.cancelRun).not.toHaveBeenCalled();
 	});
 
 	it('resolves the pending sub-agent confirmation when the user is still authorized', async () => {
 		const service = createResolveConfirmationService();
 		service.revalidateActiveUser.mockResolvedValue({ id: 'user-1' } as unknown as User);
+		service.runState.getPendingConfirmation.mockReturnValue({
+			userId: 'user-1',
+			threadId: 'thread-1',
+		});
 		service.runState.resolvePendingConfirmation.mockReturnValue(true);
+		service.runState.getActiveRunId.mockReturnValue('run-1');
 
 		const result = await service.resolveConfirmation('user-1', 'req-1', approval);
 
-		expect(result).toBe(true);
+		expect(result).toEqual({ ok: true, runId: 'run-1' });
 		expect(service.runState.resolvePendingConfirmation).toHaveBeenCalledWith(
 			'user-1',
 			'req-1',
@@ -1650,19 +1727,65 @@ describe('InstanceAiService — resolveConfirmation', () => {
 		expect(service.suspendedThreads.dropPendingConfirmation).toHaveBeenCalledWith('req-1');
 	});
 
+	it('refuses a click on a confirmation whose row is already past its expiry', async () => {
+		const service = createResolveConfirmationService();
+		service.revalidateActiveUser.mockResolvedValue({ id: 'user-1' } as unknown as User);
+		service.pendingConfirmationRepo.isPastExpiry.mockResolvedValue(true);
+		// A still-present in-memory entry must not be resolved once the row expired.
+		service.runState.getPendingConfirmation.mockReturnValue({
+			userId: 'user-1',
+			threadId: 'thread-1',
+		});
+
+		await expect(service.resolveConfirmation('user-1', 'req-1', approval)).rejects.toThrow(
+			/expired/i,
+		);
+
+		expect(service.pendingConfirmationRepo.isPastExpiry).toHaveBeenCalledWith(
+			'req-1',
+			'user-1',
+			expect.any(Date),
+		);
+		expect(service.runState.resolvePendingConfirmation).not.toHaveBeenCalled();
+		expect(service.suspendedRunRestorer.resolveOrphanedConfirmation).not.toHaveBeenCalled();
+	});
+
+	it('resolves normally when the row is not past its expiry', async () => {
+		const service = createResolveConfirmationService();
+		service.revalidateActiveUser.mockResolvedValue({ id: 'user-1' } as unknown as User);
+		service.pendingConfirmationRepo.isPastExpiry.mockResolvedValue(false);
+		service.runState.getPendingConfirmation.mockReturnValue({
+			userId: 'user-1',
+			threadId: 'thread-1',
+		});
+		service.runState.resolvePendingConfirmation.mockReturnValue(true);
+		service.runState.getActiveRunId.mockReturnValue('run-1');
+
+		const result = await service.resolveConfirmation('user-1', 'req-1', approval);
+
+		expect(result).toEqual({ ok: true, runId: 'run-1' });
+	});
+
 	it('delegates to the orphan-restoration path when no live run resumes', async () => {
 		// The detailed orphan claim/rebuild/finalize scenarios live in
 		// suspended-run-restorer.service.test.ts; here we only assert the
 		// fallthrough wiring once in-memory resolution + resume both miss.
 		const service = createResolveConfirmationService();
 		service.revalidateActiveUser.mockResolvedValue({ id: 'user-1' } as unknown as User);
+		service.runState.getPendingConfirmation.mockReturnValue(undefined);
 		service.runState.resolvePendingConfirmation.mockReturnValue(false);
-		service.resumeSuspendedRun.mockResolvedValue(false);
-		service.suspendedRunRestorer.resolveOrphanedConfirmation.mockResolvedValue(true);
+		service.resumeSuspendedRun.mockResolvedValue(null);
+		service.suspendedRunRestorer.resolveOrphanedConfirmation.mockResolvedValue({
+			ok: true,
+			runId: 'run-1',
+		});
 
 		const result = await service.resolveConfirmation('user-1', 'req-1', approval);
 
-		expect(result).toBe(true);
+		expect(result).toEqual({
+			ok: true,
+			runId: 'run-1',
+		});
 		expect(service.suspendedRunRestorer.resolveOrphanedConfirmation).toHaveBeenCalledWith(
 			'user-1',
 			'req-1',
@@ -1673,8 +1796,9 @@ describe('InstanceAiService — resolveConfirmation', () => {
 	it('propagates the terminal UserError thrown by the orphan-restoration path', async () => {
 		const service = createResolveConfirmationService();
 		service.revalidateActiveUser.mockResolvedValue({ id: 'user-1' } as unknown as User);
+		service.runState.getPendingConfirmation.mockReturnValue(undefined);
 		service.runState.resolvePendingConfirmation.mockReturnValue(false);
-		service.resumeSuspendedRun.mockResolvedValue(false);
+		service.resumeSuspendedRun.mockResolvedValue(null);
 		service.suspendedRunRestorer.resolveOrphanedConfirmation.mockRejectedValue(
 			new UserError('This confirmation was lost when the assistant restarted.'),
 		);
@@ -1687,12 +1811,19 @@ describe('InstanceAiService — resolveConfirmation', () => {
 	it('does not reach the orphan-restoration path when a live run resumes', async () => {
 		const service = createResolveConfirmationService();
 		service.revalidateActiveUser.mockResolvedValue({ id: 'user-1' } as unknown as User);
+		service.runState.getPendingConfirmation.mockReturnValue(undefined);
 		service.runState.resolvePendingConfirmation.mockReturnValue(false);
-		service.resumeSuspendedRun.mockResolvedValue(true);
+		service.resumeSuspendedRun.mockResolvedValue({
+			ok: true,
+			runId: 'run-1',
+		});
 
 		const result = await service.resolveConfirmation('user-1', 'req-1', approval);
 
-		expect(result).toBe(true);
+		expect(result).toEqual({
+			ok: true,
+			runId: 'run-1',
+		});
 		expect(service.suspendedRunRestorer.resolveOrphanedConfirmation).not.toHaveBeenCalled();
 	});
 });
@@ -1990,7 +2121,7 @@ describe('InstanceAiService — suspended run user revalidation', () => {
 
 		const result = await service.resumeSuspendedRun('user-1', 'req-1', { approved: true });
 
-		expect(result).toBe(false);
+		expect(result).toBeNull();
 		expect(service.cancelRun).toHaveBeenCalledWith('thread-a');
 		expect(service.runState.activateSuspendedRun).not.toHaveBeenCalled();
 		expect(service.processResumedStream).not.toHaveBeenCalled();
@@ -2007,7 +2138,10 @@ describe('InstanceAiService — suspended run user revalidation', () => {
 
 		const result = await service.resumeSuspendedRun('user-1', 'req-1', { approved: true });
 
-		expect(result).toBe(true);
+		expect(result).toEqual({
+			ok: true,
+			runId: 'run-1',
+		});
 		expect(service.runState.activateSuspendedRun).toHaveBeenCalledWith('thread-a');
 		expect(service.processResumedStream).toHaveBeenCalledWith(
 			expect.any(Object),
@@ -2017,6 +2151,165 @@ describe('InstanceAiService — suspended run user revalidation', () => {
 				toolName: 'workflows',
 				suspendPayload: { workflowId: 'wf-1', setupRequests: [] },
 			}),
+		);
+	});
+
+	it('rebuilds the agent when autoSetup is set, and resumes with the rebuilt one', async () => {
+		const service = createSuspendedRunResumeService();
+		const freshUser = { id: 'user-1', disabled: false } as User;
+		service.revalidateActiveUser.mockResolvedValue(freshUser);
+		const rebuiltAgent = { id: 'rebuilt-agent' };
+		service.rebuildAgentForAutoSetupResume.mockResolvedValue({
+			agent: rebuiltAgent,
+			modelId: { provider: 'anthropic', model: 'claude' },
+		});
+
+		const result = await service.resumeSuspendedRun('user-1', 'req-1', {
+			approved: true,
+			autoSetup: { credentialType: 'datadogApi' },
+		});
+
+		expect(result).toEqual({ ok: true, runId: 'run-1' });
+		expect(service.rebuildAgentForAutoSetupResume).toHaveBeenCalledWith(
+			freshUser,
+			'thread-a',
+			'run-1',
+			expect.any(AbortController),
+			undefined,
+			undefined,
+			'group-1',
+		);
+		expect(service.processResumedStream).toHaveBeenCalledWith(
+			rebuiltAgent,
+			expect.objectContaining({ autoSetup: { credentialType: 'datadogApi' } }),
+			expect.objectContaining({ modelId: { provider: 'anthropic', model: 'claude' } }),
+		);
+		const [, resumeDataArg] = service.processResumedStream.mock.calls[0] as [unknown, object];
+		expect(resumeDataArg).not.toHaveProperty('requiresAgentRebuild');
+	});
+
+	it('fails the resume and cancels the run when the rebuild fails', async () => {
+		const service = createSuspendedRunResumeService();
+		const freshUser = { id: 'user-1', disabled: false } as User;
+		service.revalidateActiveUser.mockResolvedValue(freshUser);
+		service.rebuildAgentForAutoSetupResume.mockResolvedValue(undefined);
+
+		const result = await service.resumeSuspendedRun('user-1', 'req-1', {
+			approved: true,
+			autoSetup: { credentialType: 'datadogApi' },
+		});
+
+		expect(result).toBeNull();
+		expect(service.cancelRun).toHaveBeenCalledWith('thread-a', 'agent_rebuild_failed');
+		expect(service.processResumedStream).not.toHaveBeenCalled();
+	});
+
+	it('does not rebuild the agent for a plain resume without autoSetup', async () => {
+		const service = createSuspendedRunResumeService();
+		const freshUser = { id: 'user-1', disabled: false } as User;
+		service.revalidateActiveUser.mockResolvedValue(freshUser);
+
+		const result = await service.resumeSuspendedRun('user-1', 'req-1', { approved: true });
+
+		expect(result).toEqual({ ok: true, runId: 'run-1' });
+		expect(service.rebuildAgentForAutoSetupResume).not.toHaveBeenCalled();
+	});
+});
+
+describe('InstanceAiService — rebuildAgentForAutoSetupResume', () => {
+	type RebuildAgentServiceInternals = {
+		rebuildAgentForAutoSetupResume: (
+			user: User,
+			threadId: string,
+			runId: string,
+			abortController: AbortController,
+			tracing: InstanceAiTraceContext | undefined,
+			runHandoff: { handoffReason?: string } | undefined,
+			messageGroupId?: string,
+		) => Promise<{ agent: unknown; modelId?: unknown } | undefined>;
+		buildFreshInstanceAgent: Mock;
+		threadPushRef: { get: Mock };
+		logger: { warn: Mock };
+	};
+
+	function createRebuildAgentService(): RebuildAgentServiceInternals {
+		const service = Object.create(
+			InstanceAiService.prototype,
+		) as unknown as RebuildAgentServiceInternals;
+		service.buildFreshInstanceAgent = vi.fn();
+		service.threadPushRef = { get: vi.fn(() => undefined) };
+		service.logger = { warn: vi.fn() };
+		return service;
+	}
+
+	it('reconnects the rebuilt context to the existing runHandoff state', async () => {
+		const service = createRebuildAgentService();
+		const orchestrationContext = {};
+		const rebuiltAgent = { id: 'rebuilt-agent' };
+		service.buildFreshInstanceAgent.mockResolvedValue({
+			agent: rebuiltAgent,
+			modelId: { provider: 'anthropic', model: 'claude' },
+			orchestrationContext,
+		});
+		const runHandoff = { handoffReason: undefined };
+
+		const result = await service.rebuildAgentForAutoSetupResume(
+			fakeUser,
+			'thread-a',
+			'run-1',
+			new AbortController(),
+			undefined,
+			runHandoff,
+			'group-1',
+		);
+
+		expect(result).toEqual({
+			agent: rebuiltAgent,
+			modelId: { provider: 'anthropic', model: 'claude' },
+		});
+		expect(createOrchestratorRunControl).toHaveBeenCalledWith(orchestrationContext, runHandoff);
+	});
+
+	it('defaults to an empty handoff state when the run never had one', async () => {
+		const service = createRebuildAgentService();
+		const orchestrationContext = {};
+		service.buildFreshInstanceAgent.mockResolvedValue({
+			agent: {},
+			modelId: { provider: 'anthropic', model: 'claude' },
+			orchestrationContext,
+		});
+
+		await service.rebuildAgentForAutoSetupResume(
+			fakeUser,
+			'thread-a',
+			'run-1',
+			new AbortController(),
+			undefined,
+			undefined,
+			'group-1',
+		);
+
+		expect(createOrchestratorRunControl).toHaveBeenCalledWith(orchestrationContext, {});
+	});
+
+	it('returns undefined and logs a warning when the rebuild throws', async () => {
+		const service = createRebuildAgentService();
+		service.buildFreshInstanceAgent.mockRejectedValue(new Error('boom'));
+
+		const result = await service.rebuildAgentForAutoSetupResume(
+			fakeUser,
+			'thread-a',
+			'run-1',
+			new AbortController(),
+			undefined,
+			undefined,
+			'group-1',
+		);
+
+		expect(result).toBeUndefined();
+		expect(service.logger.warn).toHaveBeenCalledWith(
+			'Failed to rebuild agent for credential auto-setup resume',
+			expect.objectContaining({ threadId: 'thread-a', runId: 'run-1' }),
 		);
 	});
 });
@@ -2465,6 +2758,167 @@ describe('InstanceAiService — terminal response guard wiring', () => {
 	});
 });
 
+describe('InstanceAiService — run error reporter lifecycle', () => {
+	const resumedStreamOpts = (abortController: AbortController) => ({
+		runId: 'run-1',
+		agentRunId: 'agent-run-1',
+		threadId: 'thread-a',
+		user: fakeUser,
+		toolCallId: 'tool-call-1',
+		signal: abortController.signal,
+		abortController,
+		snapshotStorage: {},
+	});
+
+	beforeEach(() => {
+		vi.mocked(resumeAgentRun).mockReset();
+	});
+
+	it('pairs beginRun/endRun when a resumed stream errors', async () => {
+		const service = createTerminalGuardOrderService();
+		const abortController = new AbortController();
+		vi.mocked(resumeAgentRun).mockRejectedValueOnce(new Error('provider failed'));
+
+		await service.processResumedStream({}, {}, resumedStreamOpts(abortController));
+
+		expect(service.instanceAiErrorReporter.beginRun).toHaveBeenCalledTimes(1);
+		expect(service.instanceAiErrorReporter.beginRun).toHaveBeenCalledWith('run-1');
+		expect(service.instanceAiErrorReporter.endRun).toHaveBeenCalledTimes(1);
+		expect(service.instanceAiErrorReporter.endRun).toHaveBeenCalledWith('run-1');
+	});
+
+	it('pairs beginRun/endRun when a resumed stream completes', async () => {
+		const service = createTerminalGuardOrderService();
+		const abortController = new AbortController();
+		vi.mocked(resumeAgentRun).mockResolvedValueOnce({
+			status: 'completed',
+			agentRunId: 'agent-run-1',
+			text: Promise.resolve('done'),
+			workSummary: { toolCalls: [], totalToolCalls: 0, totalToolErrors: 0 },
+		});
+
+		await service.processResumedStream({}, {}, resumedStreamOpts(abortController));
+
+		expect(service.instanceAiErrorReporter.beginRun).toHaveBeenCalledWith('run-1');
+		expect(service.instanceAiErrorReporter.endRun).toHaveBeenCalledWith('run-1');
+	});
+
+	it('calls endRun after post-run wiring finishes', async () => {
+		const service = createTerminalGuardOrderService();
+		const abortController = new AbortController();
+		const callOrder: string[] = [];
+		service.runState.hasSuspendedRun = vi.fn(() => false);
+		service.schedulePlannedTasks = vi.fn(async () => {
+			callOrder.push('schedulePlannedTasks');
+		});
+		service.drainPendingCheckpointReentries = vi.fn(async () => {
+			callOrder.push('drainPendingCheckpointReentries');
+		});
+		service.taskProjector = {
+			syncFromWorkflowLoop: vi.fn(async () => {
+				callOrder.push('syncFromWorkflowLoop');
+			}),
+		};
+		service.maybeStartWorkflowSetupFollowUp = vi.fn(async () => {
+			callOrder.push('maybeStartWorkflowSetupFollowUp');
+		});
+		service.finalizeRun = vi.fn(async () => {
+			callOrder.push('finalizeRun');
+		});
+		service.instanceAiErrorReporter.beginRun = vi.fn(() => {
+			callOrder.push('beginRun');
+		});
+		service.instanceAiErrorReporter.endRun = vi.fn(() => {
+			callOrder.push('endRun');
+		});
+		vi.mocked(resumeAgentRun).mockResolvedValueOnce({
+			status: 'completed',
+			agentRunId: 'agent-run-1',
+			text: Promise.resolve('done'),
+			workSummary: { toolCalls: [], totalToolCalls: 0, totalToolErrors: 0 },
+		});
+
+		await service.processResumedStream({}, {}, resumedStreamOpts(abortController));
+
+		expect(callOrder).toEqual([
+			'beginRun',
+			'finalizeRun',
+			'schedulePlannedTasks',
+			'drainPendingCheckpointReentries',
+			'syncFromWorkflowLoop',
+			'maybeStartWorkflowSetupFollowUp',
+			'endRun',
+		]);
+	});
+});
+
+describe('InstanceAiService — user message persistence on cancel', () => {
+	type ExecuteRunInternals = {
+		executeRun: (
+			user: User,
+			threadId: string,
+			runId: string,
+			message: string,
+			abortController: AbortController,
+		) => Promise<void>;
+		agentMemory: { saveMessages: Mock };
+		eventBus: { publish: Mock };
+		terminalOutcome: { evaluateTerminalResponse: Mock };
+		logger: { warn: Mock; error: Mock };
+		createProxyRunConfig: Mock;
+		isRunDebugEnabled: Mock;
+		runState: { clearActiveRun: Mock; hasSuspendedRun: Mock };
+		domainAccessTrackersByThread: Map<string, unknown>;
+		instanceAiErrorReporter: { beginRun: Mock; endRun: Mock };
+	};
+
+	function createCancelPersistenceService(): ExecuteRunInternals {
+		const service = Object.create(InstanceAiService.prototype) as unknown as ExecuteRunInternals;
+		service.agentMemory = { saveMessages: vi.fn(async () => {}) };
+		service.eventBus = { publish: vi.fn() };
+		service.terminalOutcome = { evaluateTerminalResponse: vi.fn() };
+		service.logger = { warn: vi.fn(), error: vi.fn() };
+		service.createProxyRunConfig = vi.fn(async () => ({ tracingProxyConfig: undefined }));
+		service.isRunDebugEnabled = vi.fn(() => false);
+		// hasSuspendedRun → true short-circuits the finally's post-run scheduling
+		service.runState = { clearActiveRun: vi.fn(), hasSuspendedRun: vi.fn(() => true) };
+		service.domainAccessTrackersByThread = new Map();
+		service.instanceAiErrorReporter = { beginRun: vi.fn(), endRun: vi.fn() };
+		return service;
+	}
+
+	it('persists the user message when Stop is hit before the stream starts', async () => {
+		const service = createCancelPersistenceService();
+		const abortController = new AbortController();
+		abortController.abort();
+
+		await service.executeRun(fakeUser, 'thread-1', 'run-1', 'banana', abortController);
+
+		expect(service.agentMemory.saveMessages).toHaveBeenCalledWith(
+			expect.objectContaining({
+				threadId: 'thread-1',
+				resourceId: 'user-1',
+				messages: [
+					expect.objectContaining({
+						role: 'user',
+						content: [{ type: 'text', text: 'banana' }],
+					}),
+				],
+			}),
+		);
+	});
+
+	it('does not persist an empty user message', async () => {
+		const service = createCancelPersistenceService();
+		const abortController = new AbortController();
+		abortController.abort();
+
+		await service.executeRun(fakeUser, 'thread-1', 'run-1', '', abortController);
+
+		expect(service.agentMemory.saveMessages).not.toHaveBeenCalled();
+	});
+});
+
 describe('InstanceAiService — OAuth callback URL', () => {
 	// Regression: the OAuth callback URL exposed to browser-assisted credential
 	// setup must come from urlService.getInstanceBaseUrl() (which honors WEBHOOK_URL
@@ -2906,68 +3360,189 @@ describe('InstanceAiService — deterministic workflow setup follow-up', () => {
 	});
 });
 
-describe('reportInstanceAiError dedup + withSetupBoundary', () => {
-	type Internals = {
-		errorReporter: { error: Mock };
-		logger: { error: Mock };
-		reportedErrors: WeakSet<object>;
-		reportInstanceAiError: (
-			error: unknown,
-			context: { component: string; threadId: string; runId: string },
-		) => void;
-		withSetupBoundary: <T>(
-			component: string,
-			context: { threadId: string; runId: string },
-			fn: () => Promise<T>,
-		) => Promise<T>;
-	};
+type TaskControlInternals = {
+	instanceSettings: { isMultiMain: boolean };
+	publisher: { publishCommand: Mock };
+	backgroundTasks: { getTaskSnapshots: Mock };
+	logger: { error: Mock };
+	sendCorrectionToTask: Mock;
+	cancelBackgroundTask: Mock;
+	cancelRun: Mock;
+	clearThreadState: Mock;
+	routeCorrectionToTask: InstanceAiService['routeCorrectionToTask'];
+	routeCancelBackgroundTask: InstanceAiService['routeCancelBackgroundTask'];
+	routeCancelRun: InstanceAiService['routeCancelRun'];
+	routeClearThreadState: InstanceAiService['routeClearThreadState'];
+	handleRelayTaskControl: InstanceAiService['handleRelayTaskControl'];
+};
 
-	function makeService(): Internals {
-		const service = Object.create(InstanceAiService.prototype) as unknown as Internals;
-		service.errorReporter = { error: vi.fn() };
-		service.logger = { error: vi.fn() };
-		service.reportedErrors = new WeakSet();
-		return service;
-	}
+function buildTaskControlService(isMultiMain: boolean): TaskControlInternals {
+	const service = Object.create(InstanceAiService.prototype) as unknown as TaskControlInternals;
+	service.instanceSettings = { isMultiMain };
+	service.publisher = { publishCommand: vi.fn().mockResolvedValue(undefined) };
+	service.backgroundTasks = { getTaskSnapshots: vi.fn(() => []) };
+	service.logger = { error: vi.fn() };
+	service.sendCorrectionToTask = vi.fn(() => 'queued');
+	service.cancelBackgroundTask = vi.fn();
+	service.cancelRun = vi.fn();
+	service.clearThreadState = vi.fn(async () => {});
+	return service;
+}
 
-	it('reports an error once even if reported again under a different component', () => {
-		const service = makeService();
-		const error = new Error('boom');
+describe('InstanceAiService — cross-main task-control routing', () => {
+	describe('routeCorrectionToTask', () => {
+		it('broadcasts when the task is not local and multi-main', async () => {
+			const service = buildTaskControlService(true);
+			service.sendCorrectionToTask.mockReturnValue('task-not-found');
 
-		service.reportInstanceAiError(error, {
-			component: 'instance-ai-mcp-setup',
-			threadId: 't',
-			runId: 'r',
+			await service.routeCorrectionToTask('thread-a', 'task-1', 'try again');
+
+			expect(service.sendCorrectionToTask).toHaveBeenCalledWith('thread-a', 'task-1', 'try again');
+			expect(service.publisher.publishCommand).toHaveBeenCalledWith({
+				command: 'relay-instance-ai-task-control',
+				payload: {
+					threadId: 'thread-a',
+					taskId: 'task-1',
+					action: 'correct',
+					correction: 'try again',
+				},
+			});
 		});
-		service.reportInstanceAiError(error, {
-			component: 'instance-ai-run',
-			threadId: 't',
-			runId: 'r',
+
+		it('does not broadcast when the correction was applied locally', async () => {
+			const service = buildTaskControlService(true);
+			service.sendCorrectionToTask.mockReturnValue('queued');
+
+			await service.routeCorrectionToTask('thread-a', 'task-1', 'try again');
+
+			expect(service.publisher.publishCommand).not.toHaveBeenCalled();
 		});
 
-		expect(service.errorReporter.error).toHaveBeenCalledTimes(1);
-		expect(service.errorReporter.error.mock.calls[0][1].tags.component).toBe(
-			'instance-ai-mcp-setup',
-		);
+		it('does not broadcast in single-main even on a local miss', async () => {
+			const service = buildTaskControlService(false);
+			service.sendCorrectionToTask.mockReturnValue('task-not-found');
+
+			await service.routeCorrectionToTask('thread-a', 'task-1', 'try again');
+
+			expect(service.publisher.publishCommand).not.toHaveBeenCalled();
+		});
 	});
 
-	it('withSetupBoundary reports with its component then rethrows', async () => {
-		const service = makeService();
-		const error = new Error('setup failed');
+	describe('routeCancelBackgroundTask', () => {
+		it('broadcasts when the task is not local and multi-main', async () => {
+			const service = buildTaskControlService(true);
+			service.backgroundTasks.getTaskSnapshots.mockReturnValue([]);
 
-		await expect(
-			service.withSetupBoundary(
-				'instance-ai-sandbox-setup',
-				{ threadId: 't', runId: 'r' },
-				async () => {
-					throw error;
-				},
-			),
-		).rejects.toBe(error);
+			await service.routeCancelBackgroundTask('thread-a', 'task-1');
 
-		expect(service.errorReporter.error).toHaveBeenCalledTimes(1);
-		expect(service.errorReporter.error.mock.calls[0][1].tags.component).toBe(
-			'instance-ai-sandbox-setup',
-		);
+			expect(service.cancelBackgroundTask).toHaveBeenCalledWith('thread-a', 'task-1');
+			expect(service.publisher.publishCommand).toHaveBeenCalledWith({
+				command: 'relay-instance-ai-task-control',
+				payload: { threadId: 'thread-a', taskId: 'task-1', action: 'cancel-task' },
+			});
+		});
+
+		it('does not broadcast when the task is local', async () => {
+			const service = buildTaskControlService(true);
+			service.backgroundTasks.getTaskSnapshots.mockReturnValue([{ taskId: 'task-1' }]);
+
+			await service.routeCancelBackgroundTask('thread-a', 'task-1');
+
+			expect(service.cancelBackgroundTask).toHaveBeenCalledWith('thread-a', 'task-1');
+			expect(service.publisher.publishCommand).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('routeCancelRun / routeClearThreadState', () => {
+		it('routeCancelRun cancels locally and always fans out in multi-main', async () => {
+			const service = buildTaskControlService(true);
+
+			await service.routeCancelRun('thread-a');
+
+			expect(service.cancelRun).toHaveBeenCalledWith('thread-a');
+			expect(service.publisher.publishCommand).toHaveBeenCalledWith({
+				command: 'relay-instance-ai-task-control',
+				payload: { threadId: 'thread-a', action: 'cancel-thread' },
+			});
+		});
+
+		it('routeCancelRun does not fan out in single-main', async () => {
+			const service = buildTaskControlService(false);
+
+			await service.routeCancelRun('thread-a');
+
+			expect(service.cancelRun).toHaveBeenCalledWith('thread-a');
+			expect(service.publisher.publishCommand).not.toHaveBeenCalled();
+		});
+
+		it('routeClearThreadState clears locally and fans out in multi-main', async () => {
+			const service = buildTaskControlService(true);
+
+			await service.routeClearThreadState('thread-a');
+
+			expect(service.clearThreadState).toHaveBeenCalledWith('thread-a');
+			expect(service.publisher.publishCommand).toHaveBeenCalledWith({
+				command: 'relay-instance-ai-task-control',
+				payload: { threadId: 'thread-a', action: 'clear-thread' },
+			});
+		});
+	});
+
+	describe('handleRelayTaskControl', () => {
+		it('applies a relayed correction via the local method and never re-broadcasts', async () => {
+			const service = buildTaskControlService(true);
+
+			await service.handleRelayTaskControl({
+				threadId: 'thread-a',
+				taskId: 'task-1',
+				action: 'correct',
+				correction: 'fix it',
+			});
+
+			expect(service.sendCorrectionToTask).toHaveBeenCalledWith('thread-a', 'task-1', 'fix it');
+			expect(service.publisher.publishCommand).not.toHaveBeenCalled();
+		});
+
+		it('ignores a correction relay missing its correction text', async () => {
+			const service = buildTaskControlService(true);
+
+			await service.handleRelayTaskControl({
+				threadId: 'thread-a',
+				taskId: 'task-1',
+				action: 'correct',
+			});
+
+			expect(service.sendCorrectionToTask).not.toHaveBeenCalled();
+		});
+
+		it('routes cancel-task / cancel-thread / clear-thread to the local methods', async () => {
+			const service = buildTaskControlService(true);
+
+			await service.handleRelayTaskControl({
+				threadId: 'thread-a',
+				taskId: 'task-1',
+				action: 'cancel-task',
+			});
+			await service.handleRelayTaskControl({ threadId: 'thread-a', action: 'cancel-thread' });
+			await service.handleRelayTaskControl({ threadId: 'thread-a', action: 'clear-thread' });
+
+			expect(service.cancelBackgroundTask).toHaveBeenCalledWith('thread-a', 'task-1');
+			expect(service.cancelRun).toHaveBeenCalledWith('thread-a');
+			expect(service.clearThreadState).toHaveBeenCalledWith('thread-a');
+			expect(service.publisher.publishCommand).not.toHaveBeenCalled();
+		});
+
+		it('swallows and logs errors from a local action (no unhandled rejection on the sibling main)', async () => {
+			const service = buildTaskControlService(true);
+			service.clearThreadState.mockRejectedValue(new Error('db exploded'));
+
+			await expect(
+				service.handleRelayTaskControl({ threadId: 'thread-a', action: 'clear-thread' }),
+			).resolves.toBeUndefined();
+			expect(service.logger.error).toHaveBeenCalledWith(
+				'Failed to apply relayed Instance AI task-control',
+				expect.objectContaining({ threadId: 'thread-a', action: 'clear-thread' }),
+			);
+		});
 	});
 });

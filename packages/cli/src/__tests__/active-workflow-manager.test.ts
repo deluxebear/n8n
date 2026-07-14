@@ -3,6 +3,7 @@ import type { Logger } from '@n8n/backend-common';
 import { mockLogger } from '@n8n/backend-test-utils';
 import type { WorkflowsConfig } from '@n8n/config';
 import type { WorkflowEntity, WorkflowHistory, WorkflowRepository } from '@n8n/db';
+import { createDeferredPromise } from '@n8n/utils/promise/deferred-promise';
 import type { InstanceSettings } from 'n8n-core';
 import {
 	ActiveWorkflowTriggers,
@@ -23,7 +24,7 @@ import type {
 	WorkflowActivateMode,
 	WorkflowExecuteMode,
 } from 'n8n-workflow';
-import { createDeferredPromise, sleep, Workflow, WorkflowActivationError } from 'n8n-workflow';
+import { sleep, Workflow, WorkflowActivationError } from 'n8n-workflow';
 import { mock } from 'vitest-mock-extended';
 
 import type { ActivationErrorsService } from '@/activation-errors.service';
@@ -546,6 +547,36 @@ describe('ActiveWorkflowManager', () => {
 				);
 				expect(executeErrorWorkflowSpy).toHaveBeenCalled();
 				expect(addQueuedWorkflowActivationSpy).toHaveBeenCalledWith(activation, workflowData);
+			});
+
+			test('wraps the cause in a WorkflowActivationError that surfaces the cause message in `description`', () => {
+				const workflowData = mock<WorkflowEntity>({ id: 'wf-1', name: 'Test Workflow' });
+				const additionalData = mock<IWorkflowExecuteAdditionalData>();
+				const mode: WorkflowExecuteMode = 'trigger';
+				const activation: WorkflowActivateMode = 'activate';
+				const workflow = mock<Workflow>({ name: 'Test Workflow' });
+				const node = mock<INode>({ name: 'Trigger Node' });
+				const triggerError = new Error('IMAP connection closed unexpectedly');
+
+				const executeErrorWorkflowSpy = vi
+					.spyOn(activeWorkflowManager, 'executeErrorWorkflow')
+					.mockImplementation(() => {});
+
+				const getTriggerFunctions = activeWorkflowManager.getExecuteTriggerFunctions(
+					workflowData,
+					additionalData,
+					mode,
+					activation,
+					async () => workflowData,
+				);
+				const context = getTriggerFunctions(workflow, node, additionalData, mode, activation);
+
+				context.emitError(triggerError);
+
+				const wrappedError = executeErrorWorkflowSpy.mock.calls[0][0] as WorkflowActivationError;
+				expect(wrappedError).toBeInstanceOf(WorkflowActivationError);
+				expect(wrappedError.message).not.toBe(triggerError.message);
+				expect(wrappedError.description).toBe('IMAP connection closed unexpectedly');
 			});
 		});
 

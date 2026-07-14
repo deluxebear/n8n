@@ -834,6 +834,25 @@ describe('Salesforce -> GenericFunctions', () => {
 				);
 			});
 
+			it('merges extra option headers without dropping the Content-Type header', async () => {
+				mockRequest.mockResolvedValue({ records: [] });
+
+				await salesforceApiRequest.call(
+					mockExecuteFunctions,
+					'GET',
+					'/query',
+					{},
+					{ q: 'SELECT Id FROM Account' },
+					undefined,
+					{ headers: { 'Sforce-Query-Options': 'batchSize=200' } },
+				);
+
+				expect(mockRequest.mock.calls[0][1].headers).toEqual({
+					'Content-Type': 'application/json',
+					'Sforce-Query-Options': 'batchSize=200',
+				});
+			});
+
 			it('omits an empty body', async () => {
 				mockRequest.mockResolvedValue({});
 
@@ -1359,7 +1378,7 @@ describe('Salesforce -> GenericFunctions', () => {
 					});
 				});
 
-				describe('typeVersion 1.1 (numeric strings are quoted — NODE-5116 fix)', () => {
+				describe('typeVersion 1.1 (numeric strings are quoted)', () => {
 					it('should quote numeric-looking string values', () => {
 						expect(getValue('0', 1.1)).toBe("'0'");
 						expect(getValue('123', 1.1)).toBe("'123'");
@@ -1367,7 +1386,7 @@ describe('Salesforce -> GenericFunctions', () => {
 						expect(getValue('-5', 1.1)).toBe("'-5'");
 					});
 
-					it('should quote numeric strings without leading zero (regression: NODE-5116)', () => {
+					it('should quote numeric strings without leading zero (regression)', () => {
 						// String-typed Salesforce fields (e.g. external IDs) reject unquoted
 						// numeric literals: "must be of type string and should be enclosed in quotes".
 						expect(getValue('307795203', 1.1)).toBe("'307795203'");
@@ -1573,7 +1592,7 @@ describe('Salesforce -> GenericFunctions', () => {
 					expect(result).toBe('WHERE AnnualRevenue > 0');
 				});
 
-				it('should quote numeric string values on typeVersion 1.1 (NODE-5116 fix)', () => {
+				it('should quote numeric string values on typeVersion 1.1', () => {
 					const options: IDataObject = {
 						conditionsUi: {
 							conditionValues: [{ field: 'IdNumber__c', operation: 'equal', value: '307795203' }],

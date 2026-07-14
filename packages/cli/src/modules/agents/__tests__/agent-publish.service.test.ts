@@ -108,6 +108,7 @@ function makeService() {
 	customToolsService.snapshotConfiguredTools.mockReturnValue(null);
 	chatIntegrationService.syncToConfig.mockResolvedValue(undefined);
 	chatIntegrationService.disconnect.mockResolvedValue();
+	chatIntegrationService.disconnectChannel.mockResolvedValue();
 	taskService.requestReconcile.mockResolvedValue();
 	subAgentCleanupService.removeSubAgentFromParents.mockResolvedValue();
 	Container.set(ChatIntegrationService, chatIntegrationService);
@@ -249,6 +250,7 @@ describe('AgentPublishService', () => {
 			versionId: 'v1',
 			activeVersionId: 'v1',
 			activeVersion: makeHistory({ versionId: 'v1' }),
+			integrations: [{ type: 'slack', credentialId: 'slack-1' }],
 		});
 
 		agentRepository.findByIdAndProjectId.mockResolvedValue(agent);
@@ -258,11 +260,19 @@ describe('AgentPublishService', () => {
 		await service.unpublishAgent(agentId, projectId);
 		expect(agent.activeVersionId).toBeNull();
 		expect(agent.versionId).not.toBe('v1');
-		expect(chatIntegrationService.disconnect).toHaveBeenCalledWith(agentId);
 		expect(subAgentCleanupService.removeSubAgentFromParents).toHaveBeenCalledWith(
 			agentId,
 			projectId,
 		);
+		expect(chatIntegrationService.disconnectChannel).toHaveBeenCalledWith(
+			agentId,
+			{
+				type: 'slack',
+				credentialId: 'slack-1',
+			},
+			{ deleteSubscriptions: false },
+		);
+
 		const draftVersion = agent.versionId;
 		if (!draftVersion) throw new Error('Expected unpublish to assign a draft version');
 		agentHistoryRepository.saveVersion.mockResolvedValue(makeHistory({ versionId: draftVersion }));
