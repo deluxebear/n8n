@@ -1,3 +1,34 @@
+## [2.30.7](https://github.com/n8n-io/n8n/compare/n8n@2.30.6...n8n@2.30.7) (2026-07-17)
+
+
+### Bug Fixes
+
+* **core:** Lint community packages against their provenance-attested source ([#34391](https://github.com/n8n-io/n8n/issues/34391)) ([ecf9507](https://github.com/n8n-io/n8n/commit/ecf9507feec4c73b5906b02a7f8f9289b511afdc))
+* **core:** Sign SES requests with the ses service name ([#34283](https://github.com/n8n-io/n8n/issues/34283)) ([9a9db18](https://github.com/n8n-io/n8n/commit/9a9db1808fe1a2dd88c1ff77bcb3f33aa3cdf5bd))
+
+
+## [2.30.6](https://github.com/n8n-io/n8n/compare/n8n@2.30.5...n8n@2.30.6) (2026-07-16)
+
+
+### Bug Fixes
+
+* **core:** Require execution mode for MCP workflow executions ([#34281](https://github.com/n8n-io/n8n/issues/34281)) ([ea5319f](https://github.com/n8n-io/n8n/commit/ea5319fe6c1a0cb7d88863a7e060603a55f9e2ca))
+
+
+## [2.30.5](https://github.com/n8n-io/n8n/compare/n8n@2.30.4...n8n@2.30.5) (2026-07-15)
+
+
+### Bug Fixes
+
+* **core:** Count AI assistant workflow test runs as manual executions in statistics ([#34153](https://github.com/n8n-io/n8n/issues/34153)) ([e832024](https://github.com/n8n-io/n8n/commit/e8320245f3d21799af5d5fa9d5e6d408785cff8e))
+* **core:** Preserve node aliases when generating AI tool variants ([#34195](https://github.com/n8n-io/n8n/issues/34195)) ([1c73884](https://github.com/n8n-io/n8n/commit/1c73884e195f539aaf021bcbb46496ecd4c0fb88))
+
+
+### Features
+
+* **editor:** Add n8n Credits credential selection experiment ([#34074](https://github.com/n8n-io/n8n/issues/34074)) ([1cb3d75](https://github.com/n8n-io/n8n/commit/1cb3d75481c989b63b71859cbbba2f9530de041d))
+
+
 ## [2.30.4](https://github.com/n8n-io/n8n/compare/n8n@2.30.3...n8n@2.30.4) (2026-07-13)
 
 
