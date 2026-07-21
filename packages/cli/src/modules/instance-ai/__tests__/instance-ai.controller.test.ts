@@ -1010,15 +1010,25 @@ describe('InstanceAiController', () => {
 			projectService.getProjectWithScope.mockResolvedValue({ id: 'project-1' } as never);
 			const threadResult = mock<InstanceAiEnsureThreadResponse>();
 			memoryService.ensureThread.mockResolvedValue(threadResult);
+			// Launch fields must be explicitly undefined: the deep mock proxies
+			// absent properties, which would look like a launch to the controller.
 			const payload = mock<InstanceAiEnsureThreadRequest>({
 				threadId: 'custom-id',
 				projectId: 'project-1',
+				source: undefined,
+				origin: undefined,
+				sourceContext: undefined,
 			});
 
 			const result = await controller.ensureThread(req, res, payload);
 
 			expect(result).toBe(threadResult);
-			expect(memoryService.ensureThread).toHaveBeenCalledWith(USER_ID, 'custom-id', 'project-1');
+			expect(memoryService.ensureThread).toHaveBeenCalledWith(
+				USER_ID,
+				'custom-id',
+				'project-1',
+				undefined,
+			);
 		});
 
 		it('should generate a UUID when threadId is not provided', async () => {
@@ -1028,6 +1038,9 @@ describe('InstanceAiController', () => {
 			const payload = mock<InstanceAiEnsureThreadRequest>({
 				threadId: undefined,
 				projectId: 'project-1',
+				source: undefined,
+				origin: undefined,
+				sourceContext: undefined,
 			});
 
 			await controller.ensureThread(req, res, payload);
@@ -1037,7 +1050,29 @@ describe('InstanceAiController', () => {
 				USER_ID,
 				expect.any(String),
 				'project-1',
+				undefined,
 			);
+		});
+
+		it('normalizes and forwards launch metadata when a source is provided', async () => {
+			memoryService.checkThreadOwnership.mockResolvedValue('not_found');
+			projectService.getProjectWithScope.mockResolvedValue({ id: 'project-1' } as never);
+			memoryService.ensureThread.mockResolvedValue(mock<InstanceAiEnsureThreadResponse>());
+			const payload = {
+				threadId: 'custom-id',
+				projectId: 'project-1',
+				source: 'not-a-known-source',
+				sourceContext: { templateId: '6270' },
+			} as InstanceAiEnsureThreadRequest;
+
+			await controller.ensureThread(req, res, payload);
+
+			// Unknown sources normalize to the fallback; origin defaults to internal.
+			expect(memoryService.ensureThread).toHaveBeenCalledWith(USER_ID, 'custom-id', 'project-1', {
+				source: 'unknown',
+				origin: 'internal',
+				sourceContext: { templateId: '6270' },
+			});
 		});
 
 		it('reports ensure-thread failures to observability before rethrowing', async () => {
@@ -1121,7 +1156,7 @@ describe('InstanceAiController', () => {
 		it('should return rich messages with nextEventId', async () => {
 			const richResult = mock<Omit<InstanceAiRichMessagesResponse, 'nextEventId'>>();
 			memoryService.getRichMessages.mockResolvedValue(richResult);
-			eventBus.getNextEventId.mockReturnValue(42);
+			eventBus.getNextEventId.mockResolvedValue(42);
 			const query = mock<InstanceAiThreadMessagesQuery>({
 				limit: 50,
 				page: 0,

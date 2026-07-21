@@ -235,6 +235,12 @@ export class CredentialsController {
 		// eslint-disable-next-line @typescript-eslint/no-unnecessary-boolean-literal-compare
 		const isTogglingToStatic = body.isResolvable === false && credential.isResolvable === true;
 
+		if (isTogglingToPrivate || isTogglingToStatic) {
+			const owningProject =
+				await this.sharedCredentialsRepository.findCredentialOwningProject(credentialId);
+			await this.credentialsService.ensureCanManageEndUserCredential(req.user, owningProject?.id);
+		}
+
 		const preparedCredentialData = await this.credentialsService.prepareUpdateData(
 			req.user,
 			req.body,
@@ -425,12 +431,6 @@ export class CredentialsController {
 			}
 		}
 
-		const unsharedProjectMembers =
-			toUnshare.length > 0
-				? await this.projectRelationRepository.findBy({ projectId: In(toUnshare) })
-				: [];
-		const affectedUserIds = [...new Set(unsharedProjectMembers.map((pr) => pr.userId))];
-
 		let amountRemoved: number | null = null;
 		let newShareeIds: string[] = [];
 
@@ -449,7 +449,11 @@ export class CredentialsController {
 
 			if (deleteResult.affected) {
 				amountRemoved = deleteResult.affected;
-				await this.connectionStatusProxy.cleanupOrphanedEntriesForUsers(affectedUserIds, trx);
+				await this.connectionStatusProxy.cleanupOrphanedEntriesForProjects(
+					credentialId,
+					toUnshare,
+					trx,
+				);
 			}
 
 			newShareeIds = toShare;

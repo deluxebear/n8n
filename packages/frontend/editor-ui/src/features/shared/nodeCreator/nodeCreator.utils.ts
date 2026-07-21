@@ -39,7 +39,7 @@ import * as changeCase from 'change-case';
 import sortBy from 'lodash/sortBy';
 import type { NodeViewItemSection } from './views/viewsData';
 
-import { useAiGatewayStore } from '@/app/stores/aiGateway.store';
+import { stripToolSuffix, useAiGatewayStore } from '@/app/stores/aiGateway.store';
 import { useNodeTypesStore } from '@/app/stores/nodeTypes.store';
 import { useSettingsStore } from '@/app/stores/settings.store';
 import type { NodeIconSource } from '@/app/utils/nodeIcon';
@@ -130,19 +130,89 @@ export function removeTrailingTrigger(searchFilter: string) {
 	return searchFilter;
 }
 
+// Modest on purpose: high-confidence matches on other nodes should still win.
+const AI_GATEWAY_SEARCH_BOOST = 75;
+const AI_GATEWAY_BOOST_MIN_QUERY_LENGTH = 3;
+
+/**
+ * 1. exact alias match (any query length): `scrape` → `scrape`
+ * 2. whole-alias prefix match at 3+ chars: `scra` → `scrape`
+ * 3. alias-token prefix match at 3+ chars: `pdf` → `pdf parser`
+ */
+export function matchesAliasForConnectBoost(query: string, aliases: string[]): boolean {
+	const queryLower = query.toLowerCase();
+
+	return aliases.some((alias) => {
+		const aliasLower = alias.toLowerCase();
+
+		if (aliasLower === queryLower) return true;
+
+		if (queryLower.length < AI_GATEWAY_BOOST_MIN_QUERY_LENGTH) return false;
+
+		if (aliasLower.startsWith(queryLower)) return true;
+
+		return aliasLower.split(/\s+/).some((token) => token.startsWith(queryLower));
+	});
+}
+
+/**
+ * Whether the node is eligible for n8n Connect (AI Gateway)
+ */
 function isAiGatewayEligibleNode(nodeName: string): boolean {
 	if (!useSettingsStore().isAiGatewayEnabled) return false;
 
 	const aiGatewayStore = useAiGatewayStore();
-	// Tool-variant node types carry a "Tool" suffix (e.g. "llamaParsePlatformTool"),
-	// but the gateway config lists the base name ("llamaParsePlatform").
-	const baseName = nodeName.replace(/Tool$/, '');
-	const supportedName = [nodeName, baseName].find((n) => aiGatewayStore.isNodeSupported(n));
+	// Tool-variant node types carry a "Tool"/"HitlTool" suffix,
+	// but the gateway config lists the base name.
+	const baseName = stripToolSuffix(nodeName);
+	const candidates = [
+		nodeName,
+		baseName,
+		removePreviewToken(nodeName),
+		removePreviewToken(baseName),
+	];
+	const supportedName = candidates.find((n) => aiGatewayStore.isNodeSupported(n));
 	if (!supportedName) return false;
 
-	const versions = useNodeTypesStore().getNodeVersions(supportedName);
-	const latestVersion = versions.length > 0 ? Math.max(...versions) : 1;
-	return aiGatewayStore.isNodeTypeVersionSupported(supportedName, latestVersion);
+	return aiGatewayStore.isNodeTypeVersionSupported(
+		supportedName,
+		getLatestKnownVersion(supportedName),
+	);
+}
+
+/**
+ * Latest version we know about for a node. `getNodeVersions` only covers the
+ * core map (built-in + installed community nodes); preview community nodes live
+ * behind `communityNodeType`, so fall back to their description version before
+ * defaulting to 1.
+ */
+function getLatestKnownVersion(nodeName: string): number {
+	const nodeTypesStore = useNodeTypesStore();
+	const versions = nodeTypesStore.getNodeVersions(nodeName);
+	if (versions.length > 0) return Math.max(...versions);
+
+	const communityVersion = nodeTypesStore.communityNodeType(nodeName)?.nodeDescription?.version;
+	if (Array.isArray(communityVersion)) return Math.max(...communityVersion);
+	return communityVersion ?? 1;
+}
+
+function getAiGatewaySearchBoosts(
+	query: string,
+	items: INodeCreateElement[],
+): Record<string, number> {
+	if (query === '' || !useSettingsStore().isAiGatewayEnabled) return {};
+
+	const boosts: Record<string, number> = {};
+	for (const item of items) {
+		if (item.type !== 'node') continue;
+
+		const aliases = item.properties.codex?.alias ?? [];
+		if (!matchesAliasForConnectBoost(query, aliases)) continue;
+		if (!isAiGatewayEligibleNode(item.properties.name)) continue;
+
+		boosts[item.key] = AI_GATEWAY_SEARCH_BOOST;
+	}
+	return boosts;
 }
 
 export function searchNodes(
@@ -161,7 +231,17 @@ export function searchNodes(
 	// Please update the snapshots per the README next to the snapshots if you modify items significantly.
 	const searchResults = sublimeSearch<INodeCreateElement>(trimmedFilter, items) || [];
 
-	const reRankedResults = reRankSearchResults(searchResults, additionalFactors);
+	// Any alias-prefix match is also a fuzzy match, so scanning the results
+	// (instead of all items) can never miss a boostable node.
+	const aiGatewayBoost = getAiGatewaySearchBoosts(
+		trimmedFilter,
+		searchResults.map(({ item }) => item),
+	);
+
+	const reRankedResults = reRankSearchResults(searchResults, {
+		...additionalFactors,
+		aiGatewayBoost,
+	});
 
 	return reRankedResults.map(({ item }) => item);
 }
@@ -345,6 +425,7 @@ export function extractAiGatewaySection(
 			title: i18n.baseText('nodeCreator.sectionNames.includedInN8n'),
 			children: finalizeItems(sortNodeCreateElements(supported)),
 			showSeparator: true,
+			trailing: 'creditsBalance',
 		},
 		rest,
 	};

@@ -1,11 +1,10 @@
 import { BedrockRuntimeClient } from '@aws-sdk/client-bedrock-runtime';
 import { ChatBedrockConverse } from '@langchain/aws';
 import { makeN8nLlmFailedAttemptHandler, getNodeProxyAgent } from '@n8n/ai-utilities';
+import { resolveAwsCredentials } from '@utils/aws/resolveAwsCredentials';
 import { createMockExecuteFunction } from 'n8n-nodes-base/test/nodes/Helpers';
 import { UserError, type INode, type ISupplyDataFunctions } from 'n8n-workflow';
 import type { Mocked } from 'vitest';
-
-import { resolveAwsCredentials } from '@utils/aws/resolveAwsCredentials';
 
 import { LmChatAwsBedrock } from '../LmChatAwsBedrock.node';
 
@@ -243,6 +242,130 @@ describe('LmChatAwsBedrock', () => {
 			);
 		});
 
+		describe('inference parameters', () => {
+			it('forwards all set inference options to ChatBedrockConverse', async () => {
+				const ctx = setupMockContext();
+				ctx.getNodeParameter = vi.fn().mockImplementation((paramName: string) => {
+					if (paramName === 'model') return 'amazon.nova-pro-v1:0';
+					if (paramName === 'options')
+						return {
+							topP: 0.9,
+							maxRetries: 5,
+							latency: 'optimized',
+							additionalModelRequestFields: '{"top_k": 50}',
+							guardrail: {
+								values: {
+									guardrailIdentifier: 'gr-123',
+									guardrailVersion: '2',
+									trace: 'enabled',
+								},
+							},
+						};
+					return undefined;
+				});
+
+				await node.supplyData.call(ctx, 0);
+
+				expect(MockedChatBedrockConverse).toHaveBeenCalledWith(
+					expect.objectContaining({
+						topP: 0.9,
+						maxRetries: 5,
+						performanceConfig: { latency: 'optimized' },
+						guardrailConfig: {
+							guardrailIdentifier: 'gr-123',
+							guardrailVersion: '2',
+							trace: 'enabled',
+						},
+						additionalModelRequestFields: { top_k: 50 },
+					}),
+				);
+			});
+
+			it('omits unset inference options so model defaults are preserved', async () => {
+				const ctx = setupMockContext();
+				ctx.getNodeParameter = vi.fn().mockImplementation((paramName: string) => {
+					if (paramName === 'model') return 'amazon.nova-pro-v1:0';
+					if (paramName === 'options') return {};
+					return undefined;
+				});
+
+				await node.supplyData.call(ctx, 0);
+
+				const config = MockedChatBedrockConverse.mock.calls.at(-1)?.[0] ?? {};
+				expect(config).not.toHaveProperty('topP');
+				expect(config).not.toHaveProperty('maxRetries');
+				expect(config).not.toHaveProperty('performanceConfig');
+				expect(config).not.toHaveProperty('guardrailConfig');
+				expect(config).not.toHaveProperty('additionalModelRequestFields');
+			});
+
+			it('throws a UserError when additionalModelRequestFields is invalid JSON', async () => {
+				const ctx = setupMockContext();
+				ctx.getNodeParameter = vi.fn().mockImplementation((paramName: string) => {
+					if (paramName === 'model') return 'amazon.nova-pro-v1:0';
+					if (paramName === 'options') return { additionalModelRequestFields: 'not json' };
+					return undefined;
+				});
+
+				const call = node.supplyData.call(ctx, 0);
+				await expect(call).rejects.toThrow(UserError);
+				await expect(call).rejects.toThrow('Additional Model Request Fields must be valid JSON');
+				expect(MockedChatBedrockConverse).not.toHaveBeenCalled();
+			});
+
+			it('does not forward additionalModelRequestFields when left as the default empty object', async () => {
+				const ctx = setupMockContext();
+				ctx.getNodeParameter = vi.fn().mockImplementation((paramName: string) => {
+					if (paramName === 'model') return 'amazon.nova-pro-v1:0';
+					if (paramName === 'options') return { additionalModelRequestFields: '{}' };
+					return undefined;
+				});
+
+				await node.supplyData.call(ctx, 0);
+
+				const config = MockedChatBedrockConverse.mock.calls.at(-1)?.[0] ?? {};
+				expect(config).not.toHaveProperty('additionalModelRequestFields');
+			});
+
+			it('does not set guardrailConfig when no guardrail identifier is provided', async () => {
+				const ctx = setupMockContext();
+				ctx.getNodeParameter = vi.fn().mockImplementation((paramName: string) => {
+					if (paramName === 'model') return 'amazon.nova-pro-v1:0';
+					if (paramName === 'options')
+						return { guardrail: { values: { guardrailIdentifier: '', trace: 'enabled' } } };
+					return undefined;
+				});
+
+				await node.supplyData.call(ctx, 0);
+
+				const config = MockedChatBedrockConverse.mock.calls.at(-1)?.[0] ?? {};
+				expect(config).not.toHaveProperty('guardrailConfig');
+			});
+
+			it('passes an inference-profile ARN model ID through verbatim without building a URL', async () => {
+				const arn =
+					'arn:aws:bedrock:eu-west-3:123456789012:inference-profile/eu.amazon.nova-pro-v1:0';
+				const ctx = setupMockContext();
+				ctx.getNodeParameter = vi.fn().mockImplementation((paramName: string) => {
+					if (paramName === 'model') return arn;
+					if (paramName === 'options') return {};
+					return undefined;
+				});
+
+				await node.supplyData.call(ctx, 0);
+
+				expect(MockedChatBedrockConverse).toHaveBeenCalledWith(
+					expect.objectContaining({ model: arn }),
+				);
+				// Model ID flows only through the model config, never a hand-built endpoint URL.
+				const clientConfig = MockedBedrockRuntimeClient.mock.calls.at(-1)?.[0] ?? {};
+				expect(clientConfig).not.toHaveProperty('endpoint');
+				expect(mockedGetNodeProxyAgent).toHaveBeenCalledWith(
+					'https://bedrock-runtime.eu-west-3.amazonaws.com',
+				);
+			});
+		});
+
 		describe('AssumeRole wiring', () => {
 			it('constructs BedrockRuntimeClient with the provider returned by resolveAwsCredentials', async () => {
 				const ctx = setupMockContext();
@@ -299,6 +422,56 @@ describe('LmChatAwsBedrock', () => {
 				expect(mockedGetNodeProxyAgent).toHaveBeenCalledWith(
 					'https://bedrock-runtime.eu-central-1.amazonaws.com',
 				);
+			});
+		});
+
+		describe('runtime endpoint override', () => {
+			const useModel = (ctx: Mocked<ISupplyDataFunctions>) => {
+				ctx.getNodeParameter = vi.fn().mockImplementation((paramName: string) => {
+					if (paramName === 'model') return 'amazon.nova-pro-v1:0';
+					if (paramName === 'options') return {};
+					return undefined;
+				});
+			};
+
+			it('routes inference and the proxy agent to the override endpoint when set', async () => {
+				const ctx = setupMockContext();
+				useModel(ctx);
+				mockedResolveAwsCredentials.mockResolvedValue({
+					region: 'us-east-1',
+					credentials: { accessKeyId: 'a', secretAccessKey: 'b' },
+					bedrockRuntimeEndpoint: 'https://vpce-abc.bedrock-runtime.us-east-1.vpce.amazonaws.com',
+				});
+
+				await node.supplyData.call(ctx, 0);
+
+				const expected = 'https://vpce-abc.bedrock-runtime.us-east-1.vpce.amazonaws.com';
+				expect(mockedGetNodeProxyAgent).toHaveBeenCalledWith(expected);
+				expect(MockedBedrockRuntimeClient.mock.calls.at(-1)?.[0]?.endpoint).toBe(expected);
+			});
+
+			it('leaves the SDK endpoint unset when no override is present', async () => {
+				const ctx = setupMockContext();
+				useModel(ctx);
+
+				await node.supplyData.call(ctx, 0);
+
+				expect(MockedBedrockRuntimeClient.mock.calls.at(-1)?.[0]?.endpoint).toBeUndefined();
+				expect(mockedGetNodeProxyAgent).toHaveBeenCalledWith(
+					'https://bedrock-runtime.us-east-1.amazonaws.com',
+				);
+			});
+
+			it('throws a UserError for an invalid override', async () => {
+				const ctx = setupMockContext();
+				useModel(ctx);
+				mockedResolveAwsCredentials.mockResolvedValue({
+					region: 'us-east-1',
+					credentials: { accessKeyId: 'a', secretAccessKey: 'b' },
+					bedrockRuntimeEndpoint: 'ftp://bedrock-runtime.us-east-1.amazonaws.com',
+				});
+
+				await expect(node.supplyData.call(ctx, 0)).rejects.toThrow(UserError);
 			});
 		});
 	});

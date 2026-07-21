@@ -3,6 +3,11 @@ vi.mock('@n8n/instance-ai', async () => {
 	const { z } = await vi.importActual<typeof import('zod')>('zod');
 	return {
 		orchestratorAgentId: (runId: string) => `orchestrator-${runId}`,
+		isQuotaExhaustedError: (error: unknown) =>
+			typeof error === 'object' &&
+			error !== null &&
+			'errorCode' in error &&
+			error.errorCode === 'quota_exhausted',
 		McpClientManager: class {
 			getRegularTools = vi.fn().mockResolvedValue({});
 			disconnect = vi.fn();
@@ -781,7 +786,10 @@ describe('InstanceAiService — runtime workspace setup', () => {
 			) => Promise<{
 				orchestrationContext: {
 					workspace?: unknown;
-					runtimeSkills?: { registry: { skills: Array<{ id: string }> } };
+					runtimeSkills?: {
+						registry: { skillsHash: string; skills: Array<{ id: string }> };
+						loadSkill: (skillId: string) => Promise<unknown>;
+					};
 				};
 			}>;
 			settingsService: {
@@ -803,7 +811,7 @@ describe('InstanceAiService — runtime workspace setup', () => {
 			dbIterationLogStorage: unknown;
 			dbSnapshotStorage: unknown;
 			checkpointStore: unknown;
-			instanceAiConfig: { subAgentMaxSteps: number };
+			instanceAiConfig: Record<string, never>;
 			defaultTimeZone: string;
 			eventBus: unknown;
 			logger: unknown;
@@ -853,7 +861,7 @@ describe('InstanceAiService — runtime workspace setup', () => {
 		service.dbIterationLogStorage = {};
 		service.dbSnapshotStorage = {};
 		service.checkpointStore = {};
-		service.instanceAiConfig = { subAgentMaxSteps: 10 };
+		service.instanceAiConfig = {};
 		service.defaultTimeZone = 'UTC';
 		service.eventBus = {};
 		service.logger = {};
@@ -970,6 +978,8 @@ describe('InstanceAiService — runtime workspace setup', () => {
 		);
 
 		expect(unavailableEnvironment.orchestrationContext.workspace).toBeUndefined();
+		// Without a sandbox the runtime skill catalog is used as-is (no
+		// workspace-materialized wrapper).
 		expect(unavailableEnvironment.orchestrationContext.runtimeSkills?.registry.skills).toEqual([
 			{ id: 'data-table-manager' },
 		]);
@@ -1555,6 +1565,7 @@ function createPlannedTaskSchedulerService(): {
 		revertCheckpointToPlanned: Mock;
 		revertBuildWorkflowToPlanned: Mock;
 		markRunning: Mock;
+		markFailed: Mock;
 	};
 	graph: { planRunId: string; messageGroupId: string; tasks: Array<{ id: string }> };
 } {
@@ -1569,6 +1580,7 @@ function createPlannedTaskSchedulerService(): {
 		revertCheckpointToPlanned: vi.fn(async () => {}),
 		revertBuildWorkflowToPlanned: vi.fn(async () => {}),
 		markRunning: vi.fn(async () => {}),
+		markFailed: vi.fn(async () => graph),
 	};
 
 	service.revalidateActiveUser = vi.fn();
@@ -1587,8 +1599,29 @@ function createPlannedTaskSchedulerService(): {
 		getThreadResearchMode: vi.fn(() => false),
 		hasLiveRun: vi.fn(() => false),
 	};
-	service.createPlannedTaskDispatchContext = vi.fn(async () => ({}));
-	service.dispatchPlannedTask = vi.fn(async () => {});
+	service.createPlannedTaskDispatchContext = vi.fn(async () => ({
+		plannedTaskService,
+		threadId: 'thread-a',
+	}));
+	service.dispatchPlannedTask = vi.fn(async (task, context, _graph?) => {
+		if (task.kind === 'build-workflow' || task.kind === 'checkpoint') {
+			service.logger.warn('dispatchPlannedTask called for a runtime planned-task kind', {
+				threadId: context.threadId,
+				taskId: task.id,
+				kind: task.kind,
+			});
+			return;
+		}
+
+		await context.plannedTaskService?.markFailed(context.threadId, task.id, {
+			error: `Planned task kind "${task.kind}" is no longer supported`,
+		});
+
+		const nextGraph = await context.plannedTaskService?.getGraph(context.threadId);
+		if (nextGraph) {
+			await service.syncPlannedTasksToUi(context.threadId, nextGraph);
+		}
+	});
 	service.logger = { warn: vi.fn() };
 
 	return { service, plannedTaskService, graph };
@@ -1867,25 +1900,24 @@ describe('InstanceAiService — planned task user revalidation', () => {
 		);
 	});
 
-	it('continues scheduling in the same pass after dispatching planned tasks', async () => {
+	it('marks unsupported planned dispatch tasks as failed and continues scheduling', async () => {
 		const { service, plannedTaskService, graph } = createPlannedTaskSchedulerService();
 		const freshUser = { id: 'user-1', disabled: false } as User;
-		const delegateTask = {
-			id: 'delegate-1',
-			title: 'Research',
+		const legacyTask = {
+			id: 'legacy-1',
+			title: 'Legacy task',
 			kind: 'delegate',
 			spec: 'Do the research',
 			deps: [],
-			tools: ['research'],
 			status: 'planned',
 		};
-		graph.tasks = [delegateTask];
+		graph.tasks = [legacyTask];
 		service.revalidateActiveUser.mockResolvedValue(freshUser);
 		plannedTaskService.tick
 			.mockResolvedValueOnce({
 				type: 'dispatch',
 				graph,
-				tasks: [delegateTask],
+				tasks: [legacyTask],
 			})
 			.mockResolvedValueOnce({ type: 'none', graph });
 
@@ -1896,10 +1928,12 @@ describe('InstanceAiService — planned task user revalidation', () => {
 			'thread-a',
 			graph,
 		);
-		expect(service.dispatchPlannedTask).toHaveBeenCalledWith(
-			delegateTask,
-			expect.anything(),
-			graph,
+		expect(plannedTaskService.markFailed).toHaveBeenCalledWith(
+			'thread-a',
+			'legacy-1',
+			expect.objectContaining({
+				error: expect.stringContaining('no longer supported'),
+			}),
 		);
 		expect(plannedTaskService.tick).toHaveBeenCalledTimes(2);
 		expect(service.startInternalFollowUpRun).not.toHaveBeenCalled();
@@ -2442,6 +2476,55 @@ describe('InstanceAiService — terminal response guard wiring', () => {
 
 		expect(service.eventBus.events.map((event) => event.type)).toEqual(['error', 'run-finish']);
 		expect(service.saveAgentTreeSnapshot).toHaveBeenCalledWith('thread-a', 'run-1', {});
+		// Thrown run-loop errors must reach telemetry too, not just the SSE stream
+		expect(service.telemetry.track).toHaveBeenCalledWith('instance_ai_run_finished', {
+			thread_id: 'thread-a',
+			run_id: 'run-1',
+			status: 'error',
+			user_id: 'user-1',
+		});
+		expect(service.telemetry.track).toHaveBeenCalledWith('Builder generation errored', {
+			thread_id: 'thread-a',
+			run_id: 'run-1',
+			error_message: 'provider failed',
+			error_source: 'exception',
+			user_id: 'user-1',
+		});
+	});
+
+	it('tracks "Builder generation errored" when a resumed stream reports an error', async () => {
+		const service = createTerminalGuardOrderService();
+		const abortController = new AbortController();
+		vi.mocked(resumeAgentRun).mockResolvedValueOnce({
+			status: 'errored',
+			agentRunId: 'agent-run-1',
+			text: Promise.resolve(''),
+			error: new Error('model overloaded'),
+			workSummary: { toolCalls: [], totalToolCalls: 0, totalToolErrors: 0 },
+		});
+
+		await service.processResumedStream(
+			{},
+			{},
+			{
+				runId: 'run-1',
+				agentRunId: 'agent-run-1',
+				threadId: 'thread-a',
+				user: fakeUser,
+				toolCallId: 'tool-call-1',
+				signal: abortController.signal,
+				abortController,
+				snapshotStorage: {},
+			},
+		);
+
+		expect(service.telemetry.track).toHaveBeenCalledWith('Builder generation errored', {
+			thread_id: 'thread-a',
+			run_id: 'run-1',
+			error_message: 'model overloaded',
+			error_source: 'stream',
+			user_id: 'user-1',
+		});
 	});
 
 	it('claims credits when a resumed run completes', async () => {

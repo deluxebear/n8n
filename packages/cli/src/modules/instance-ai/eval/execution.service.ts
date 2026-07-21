@@ -44,6 +44,7 @@ import { NodeTypes } from '@/node-types';
 import { PostHogClient } from '@/posthog';
 import { WorkflowRunner } from '@/workflow-runner';
 import { WorkflowFinderService } from '@/workflows/workflow-finder.service';
+import { WorkflowStaticDataService } from '@/workflows/workflow-static-data.service';
 
 import { createLlmCompletionMockHandler } from './llm-completion-mock';
 import { EvalMockedCredentialsHelper } from './eval-mocked-credentials-helper';
@@ -88,6 +89,7 @@ export class EvalExecutionService {
 		private readonly activeExecutions: ActiveExecutions,
 		private readonly executionsConfig: ExecutionsConfig,
 		private readonly binaryDataService: BinaryDataService,
+		private readonly workflowStaticDataService: WorkflowStaticDataService,
 	) {}
 
 	async executeWithLlmMock(
@@ -343,6 +345,20 @@ export class EvalExecutionService {
 			fillSetupPendingResourceLocators(node.parameters);
 		}
 
+		// Time-based Wait nodes park the execution until a future timestamp
+		// (specificTime) or sleep away the scenario budget (timeInterval), so
+		// downstream nodes never run inside the eval window even when the built
+		// workflow is correct. Zero them — execution order and branch structure
+		// stay observable, and the verifier still sees the builder's original
+		// wait config in the workflow JSON. Webhook/form-resume waits are left
+		// untouched (they model an external event, not the passage of time).
+		for (const node of workflowEntity.nodes) {
+			if (node.disabled || node.type !== 'n8n-nodes-base.wait') continue;
+			const resume = node.parameters?.resume;
+			if (resume === 'webhook' || resume === 'form') continue;
+			node.parameters = { ...node.parameters, resume: 'timeInterval', amount: 0, unit: 'seconds' };
+		}
+
 		const workflow = this.buildWorkflow(workflowEntity);
 		// Multi-trigger workflows: Phase 1 picks the trigger the scenario targets
 		// (firing the wrong one leaves the scenario's branch dormant and fails it).
@@ -423,7 +439,8 @@ export class EvalExecutionService {
 
 			const runData: IWorkflowExecutionDataProcess = {
 				executionMode: 'evaluation',
-				workflowData: workflowEntity,
+				// Builder-verify runs persist staticData (e.g. dedup cursors); scenarios assume it starts empty.
+				workflowData: { ...workflowEntity, staticData: undefined },
 				userId: user.id,
 				executionData,
 				pinData,
@@ -482,7 +499,23 @@ export class EvalExecutionService {
 					});
 				}
 			}
+			await this.blankPersistedStaticData(workflowEntity.id);
 			timings.summary(this.logger);
+		}
+	}
+
+	/**
+	 * 'evaluation'-mode runs persist getWorkflowStaticData() writes back to the
+	 * workflow row — blank it after the run so scenarios leave no state behind.
+	 */
+	private async blankPersistedStaticData(workflowId: string): Promise<void> {
+		try {
+			await this.workflowStaticDataService.saveStaticDataById(workflowId, {});
+		} catch (error) {
+			this.logger.warn('[EvalMock] Failed to blank workflow staticData after run', {
+				workflowId,
+				error: error instanceof Error ? error.message : String(error),
+			});
 		}
 	}
 
