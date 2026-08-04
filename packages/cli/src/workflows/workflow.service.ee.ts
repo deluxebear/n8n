@@ -19,7 +19,6 @@ import {
 } from '@n8n/db';
 import { Service } from '@n8n/di';
 import { hasGlobalScope } from '@n8n/permissions';
-// eslint-disable-next-line n8n-local-rules/misplaced-n8n-typeorm-import
 import { In, type EntityManager } from '@n8n/typeorm';
 import omit from 'lodash/omit';
 import type { INode, IWorkflowBase, WorkflowId } from 'n8n-workflow';
@@ -366,6 +365,7 @@ export class EnterpriseWorkflowService {
 			where: {
 				id: In(Array.from(credentialIdToWorkflowIds.keys())),
 				isResolvable: true,
+				usageScope: 'project',
 			},
 			select: ['id'],
 		});

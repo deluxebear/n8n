@@ -39,6 +39,7 @@ import type {
 	CredentialHostInfo,
 	InstanceAiEvaluationConfigService,
 	EvaluationConfigSummary,
+	EvaluationConfigDetail,
 	UpsertEvaluationConfigInput,
 	InstanceAiBuilderDelegate,
 	ModelConfig,
@@ -87,7 +88,6 @@ import { Logger, ModuleRegistry } from '@n8n/backend-common';
 import { OutboundHttp, SsrfProtectionService } from '@n8n/backend-network';
 import { Container, Service } from '@n8n/di';
 import { hasGlobalScope, type Scope } from '@n8n/permissions';
-// eslint-disable-next-line n8n-local-rules/misplaced-n8n-typeorm-import
 import { LessThan } from '@n8n/typeorm';
 import {
 	type ICredentialsDecrypted,
@@ -1136,6 +1136,8 @@ export class InstanceAiAdapterService {
 					? (nodes.find((n) => n.name === options.triggerNodeName) ?? findTriggerNode(nodes))
 					: findTriggerNode(nodes);
 
+				const timeoutMs = Math.min(options?.timeout ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS);
+
 				// Force-save AI-initiated executions so that follow-up
 				// `executions(list/get/debug)` calls can read the result, regardless of
 				// instance-wide or per-workflow save settings. Manual mode is gated by
@@ -1152,6 +1154,9 @@ export class InstanceAiAdapterService {
 							saveManualExecutions: true,
 							saveDataSuccessExecution: 'all',
 							saveDataErrorExecution: 'all',
+							// Engine-side bound: checked between node executions, so it fires
+							// even when a fast pinned loop starves the timer-based cancel below.
+							executionTimeout: Math.ceil(timeoutMs / 1000),
 						},
 					},
 					userId: user.id,
@@ -1259,7 +1264,6 @@ export class InstanceAiAdapterService {
 					};
 
 					// Wait for completion with timeout / abort protection
-					const timeoutMs = Math.min(options?.timeout ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS);
 					const abortSignal = options?.abortSignal;
 
 					if (activeExecutions.has(executionId)) {
@@ -1823,6 +1827,11 @@ export class InstanceAiAdapterService {
 				const config = await evaluationConfigService.get(workflowId, configId);
 				return config ? evaluationConfigToSummary(config) : null;
 			},
+			async describe(workflowId, configId) {
+				await findWorkflow(workflowId, 'workflow:read');
+				const config = await evaluationConfigService.get(workflowId, configId);
+				return config ? evaluationConfigToDetail(config) : null;
+			},
 			async create(workflowId, input) {
 				assertNotReadOnly();
 				const workflow = await findWorkflow(workflowId, 'workflow:update');
@@ -2151,7 +2160,7 @@ export class InstanceAiAdapterService {
 		let searchResolved = false;
 		const lazySearch: InstanceAiWebResearchService['search'] = async (query, options) => {
 			if (!searchResolved) {
-				const config = await settingsService.resolveSearchConfig(user);
+				const config = await settingsService.resolveSearchConfig();
 				resolvedSearchMethod = this.buildSearchMethod(
 					config.braveApiKey ?? '',
 					config.searxngUrl ?? '',
@@ -3037,6 +3046,28 @@ export function evaluationConfigToSummary(config: EvaluationConfig): EvaluationC
 			name: metric.name,
 			type: metric.type,
 		})),
+		datasetSource: config.datasetSource,
+		...(dataTableId !== undefined ? { dataTableId } : {}),
+	};
+}
+
+/** Like {@link evaluationConfigToSummary} but keeps the full metric bodies
+ *  (expression strings, judge model, prompt) so the agent can read a config
+ *  before an `update` replaces it wholesale. */
+export function evaluationConfigToDetail(config: EvaluationConfig): EvaluationConfigDetail {
+	const dataTableId =
+		config.datasetSource === 'data_table' && 'dataTableId' in config.datasetRef
+			? config.datasetRef.dataTableId
+			: undefined;
+	return {
+		id: config.id,
+		workflowId: config.workflowId,
+		name: config.name,
+		status: config.status,
+		invalidReason: config.invalidReason,
+		startNodeName: config.startNodeName,
+		endNodeName: config.endNodeName,
+		metrics: config.metrics,
 		datasetSource: config.datasetSource,
 		...(dataTableId !== undefined ? { dataTableId } : {}),
 	};
