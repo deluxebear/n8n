@@ -9,8 +9,6 @@ export type PublicationSkipReason =
 
 import type { WorkflowPublicationTriggerKind } from '@n8n/db';
 
-import type { WorkflowPublicationTriggerKind } from '@n8n/db';
-
 /** A trigger that activated successfully; carries no error. */
 type ActivatedTriggerPublicationStatus = {
 	nodeId: string;

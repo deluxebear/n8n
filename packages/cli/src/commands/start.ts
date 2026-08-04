@@ -428,9 +428,6 @@ export class Start extends BaseCommand<z.infer<typeof flagsSchema>> {
 			const { WorkflowPublicationReconciler } = await import(
 				'@/workflows/publication/workflow-publication-reconciler.service.js'
 			);
-			const { WorkflowPublicationReconciler } = await import(
-				'@/workflows/publication/workflow-publication-reconciler.service'
-			);
 
 			// Import for its side effect: registering the trigger deactivator's
 			// @OnLeaderStepdown and @OnShutdown handlers. Nothing else loads this module.
