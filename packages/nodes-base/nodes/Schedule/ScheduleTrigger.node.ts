@@ -14,6 +14,7 @@ import {
 	recurrenceCheck,
 	resetStaleRecurrence,
 	toCronExpression,
+	toCronSource,
 	validateInterval,
 } from './GenericFunctions';
 import type { IRecurrenceRule, Rule } from './SchedulerInterface';
@@ -419,7 +420,7 @@ export class ScheduleTrigger implements INodeType {
 										field: ['cronExpression'],
 									},
 								},
-								hint: 'Format: [Second] [Minute] [Hour] [Day of Month] [Month] [Day of Week]',
+								hint: 'Format: ([Second]) [Minute] [Hour] [Day of Month] [Month] [Day of Week]',
 							},
 						],
 					},
@@ -508,6 +509,7 @@ export class ScheduleTrigger implements INodeType {
 					const cron: Cron = {
 						expression: cronExpression,
 						recurrence,
+						source: toCronSource(interval),
 					};
 					this.helpers.registerCron(cron, (scheduledTime: Date) =>
 						executeTrigger(recurrence, /* skipRecurrenceCheck= */ false, scheduledTime),

@@ -1,5 +1,5 @@
 import { i18n } from '@n8n/i18n';
-import type { FrontendModuleDescription } from '@/app/moduleInitializer/module.types';
+import type { FrontendModuleDescription } from '@n8n/frontend-module-sdk';
 import {
 	INSTANCE_AI_BROWSER_USE_SETUP_MODAL_KEY,
 	INSTANCE_AI_COMPUTER_USE_SETUP_MODAL_KEY,
@@ -121,7 +121,7 @@ export const InstanceAiModule: FrontendModuleDescription = {
 				middleware: ['authenticated', 'rbac', 'custom'],
 				middlewareOptions: {
 					rbac: {
-						scope: 'instanceAi:message',
+						scope: ['instanceAi:message', 'instanceAi:manage'],
 					},
 				},
 				telemetry: {
@@ -158,7 +158,9 @@ export const InstanceAiModule: FrontendModuleDescription = {
 			route: { to: { name: INSTANCE_AI_SETTINGS_VIEW } },
 			preview: true,
 			get available() {
-				return hasPermission(['rbac'], { rbac: { scope: 'instanceAi:message' } });
+				return hasPermission(['rbac'], {
+					rbac: { scope: ['instanceAi:message', 'instanceAi:manage'] },
+				});
 			},
 		},
 	],

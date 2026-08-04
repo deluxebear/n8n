@@ -1,6 +1,9 @@
+export * from './agent-config-validation.schema';
 export * from './agent-files.constants';
 export * from './agent-integration.schema';
 export * from './agent-json-config.schema';
+export * from './agent-skill.schema';
+export * from './inline-agent-config.schema';
 export * from './sanitize-agent-json-config';
 export * from './agent-task.schema';
 export * from './dto';
@@ -20,10 +23,8 @@ export {
 	ASK_CREDENTIAL_TOOL_NAME,
 	ASK_EMBEDDING_CREDENTIAL_TOOL_NAME,
 	APPROVAL_TOOL_NAME,
-	interactiveToolNameSchema,
 	askCredentialInputSchema,
 	cancellationResumeSchema,
-	type InteractiveToolName,
 	type AskCredentialInput,
 	type CancellationResumeData,
 } from '../agent-builder-interactive';
