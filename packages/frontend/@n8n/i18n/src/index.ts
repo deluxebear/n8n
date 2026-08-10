@@ -14,11 +14,14 @@ import {
 
 export type * from './types';
 
+const defaultLocale: string = 'en';
+const defaultMessages: Record<string, typeof englishBaseText> = { en: englishBaseText };
+
 export const i18nInstance = createI18n({
 	legacy: false,
-	locale: 'en',
-	fallbackLocale: 'en',
-	messages: { en: englishBaseText },
+	locale: defaultLocale,
+	fallbackLocale: defaultLocale,
+	messages: defaultMessages,
 	warnHtmlMessage: false,
 });
 
@@ -405,7 +408,7 @@ export class I18nClass {
 const loadedLanguages: string[] = [];
 
 export function setLanguage(locale: string) {
-	i18nInstance.global.locale.value = locale as any;
+	i18nInstance.global.locale.value = locale;
 	document.querySelector('html')!.setAttribute('lang', locale);
 
 	// Invalidate cached baseText results on locale change

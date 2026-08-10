@@ -8130,5 +8130,8 @@
   "agents.builder.validation.issue.tool.node.missingReference": "此实例上没有此节点类型",
   "agents.builder.validation.issue.mcpServer.incompatibleCredential": "凭证类型与服务器的身份验证方法不匹配",
   "agents.builder.preview.backToChat": "返回聊天",
-  "agents.builder.triggers.remaining": "{labels}，另有 {count} 个"
+  "agents.builder.triggers.remaining": "{labels}，另有 {count} 个",
+  "roles.action.delete.hasAssignedUsers": "该角色已分配给用户且无法删除。",
+  "roles.action.delete.ownRole": "您无法删除自己的角色。",
+  "instanceAi.tools.build-workflow.imperative": "编辑工作流"
 }
