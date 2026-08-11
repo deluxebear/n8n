@@ -29,6 +29,7 @@ export * from './node-grouping-validation';
 export * from './mcp-helpers';
 export * from './tool-helpers';
 export * from './trigger-identity';
+export * from './n8n-oauth2-auth';
 export * from './node-reference-parser-utils';
 export * from './metadata-utils';
 export * from './highlighted-data';
@@ -53,7 +54,6 @@ export {
 	jsonStringify,
 	replaceCircularReferences,
 	sleep,
-	sleepWithAbort,
 	fileTypeFromMimeType,
 	assert,
 	removeCircularRefs,

@@ -523,6 +523,7 @@ describe('OIDC service', () => {
 			await oidcService.updateConfig({
 				...baseConfig,
 				additionalScopes: 'groups&redirect_uri=https://evil.com',
+				rpInitiatedLogoutEnabled: false,
 			});
 
 			const authUrl = await oidcService.generateLoginUrl();
@@ -632,7 +633,7 @@ describe('OIDC service', () => {
 				email: 'user2@example.com',
 			});
 
-			const user = await oidcService.loginUser(callbackUrl, state.signed, nonce.signed);
+			const { user } = await oidcService.loginUser(callbackUrl, state.signed, nonce.signed);
 			expect(user).toBeDefined();
 			expect(user.email).toEqual('user2@example.com');
 
@@ -678,7 +679,7 @@ describe('OIDC service', () => {
 				email: 'user2@example.com',
 			});
 
-			const user = await oidcService.loginUser(callbackUrl, state.signed, nonce.signed);
+			const { user } = await oidcService.loginUser(callbackUrl, state.signed, nonce.signed);
 			expect(user).toBeDefined();
 			expect(user.email).toEqual('user2@example.com');
 			expect(user.id).toEqual(createdUser.id);
@@ -717,7 +718,7 @@ describe('OIDC service', () => {
 				email: 'user1@example.com',
 			});
 
-			const user = await oidcService.loginUser(callbackUrl, state.signed, nonce.signed);
+			const { user } = await oidcService.loginUser(callbackUrl, state.signed, nonce.signed);
 			expect(user).toBeDefined();
 			expect(user.email).toEqual('user1@example.com');
 		});
@@ -755,7 +756,7 @@ describe('OIDC service', () => {
 				email: 'user3@example.com',
 			});
 
-			const user = await oidcService.loginUser(callbackUrl, state.signed, nonce.signed);
+			const { user } = await oidcService.loginUser(callbackUrl, state.signed, nonce.signed);
 			expect(user).toBeDefined();
 			expect(user.email).toEqual('user3@example.com');
 		});
@@ -1080,7 +1081,7 @@ describe('OIDC service', () => {
 					email: 'new-instance-role-user@example.com',
 				});
 
-				const user = await oidcService.loginUser(callbackUrl, state.signed, nonce.signed);
+				const { user } = await oidcService.loginUser(callbackUrl, state.signed, nonce.signed);
 				expect(user).toBeDefined();
 				expect(user.email).toEqual('new-instance-role-user@example.com');
 
@@ -1118,7 +1119,7 @@ describe('OIDC service', () => {
 					email: 'new-project-role-user@example.com',
 				});
 
-				const user = await oidcService.loginUser(callbackUrl, state.signed, nonce.signed);
+				const { user } = await oidcService.loginUser(callbackUrl, state.signed, nonce.signed);
 				expect(user).toBeDefined();
 				expect(user.email).toEqual('new-project-role-user@example.com');
 
@@ -1155,7 +1156,7 @@ describe('OIDC service', () => {
 					email: 'new-both-provisioning-user@example.com',
 				});
 
-				const user = await oidcService.loginUser(callbackUrl, state.signed, nonce.signed);
+				const { user } = await oidcService.loginUser(callbackUrl, state.signed, nonce.signed);
 				expect(user).toBeDefined();
 				expect(user.email).toEqual('new-both-provisioning-user@example.com');
 
@@ -1215,7 +1216,7 @@ describe('OIDC service', () => {
 						email: 'oidc-expr-instance-role@example.com',
 					});
 
-					const user = await oidcService.loginUser(callbackUrl, state.signed, nonce.signed);
+					const { user } = await oidcService.loginUser(callbackUrl, state.signed, nonce.signed);
 					expect(user).toBeDefined();
 
 					const userFromDB = await userRepository.findOne({
@@ -1268,7 +1269,7 @@ describe('OIDC service', () => {
 						email: 'oidc-expr-custom-role@example.com',
 					});
 
-					const user = await oidcService.loginUser(callbackUrl, state.signed, nonce.signed);
+					const { user } = await oidcService.loginUser(callbackUrl, state.signed, nonce.signed);
 					expect(user).toBeDefined();
 
 					const userFromDB = await userRepository.findOne({
@@ -1315,7 +1316,7 @@ describe('OIDC service', () => {
 						email: 'oidc-expr-project-role@example.com',
 					});
 
-					const user = await oidcService.loginUser(callbackUrl, state.signed, nonce.signed);
+					const { user } = await oidcService.loginUser(callbackUrl, state.signed, nonce.signed);
 					expect(user).toBeDefined();
 
 					const projectRole = await getProjectRoleForUser(project.id, user.id);
@@ -1411,6 +1412,20 @@ describe('OIDC service', () => {
 		it('should throw an error for an invalid random part of the nonce', () => {
 			const invalid = Container.get(JwtService).sign({ nonce: 'n8n_nonce:invalid-nonce' });
 			expect(() => oidcService.verifyNonce(invalid)).toThrow(BadRequestError);
+		});
+	});
+
+	describe('ID token encryption', () => {
+		it('round-trips an ID token through the real cipher', async () => {
+			const idToken = 'header.payload.signature';
+			const encrypted = await oidcService.encryptIdToken(idToken);
+
+			expect(encrypted).not.toEqual(idToken);
+			expect(await oidcService.decryptIdToken(encrypted)).toEqual(idToken);
+		});
+
+		it('returns undefined for a tampered ciphertext', async () => {
+			expect(await oidcService.decryptIdToken('not-a-valid-ciphertext')).toBeUndefined();
 		});
 	});
 });

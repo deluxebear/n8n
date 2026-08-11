@@ -2,6 +2,7 @@
 import type { INodeProperties, INodePropertyCollection, INodePropertyOptions } from 'n8n-workflow';
 import { ref } from 'vue';
 import { createI18n } from 'vue-i18n';
+import type { I18n } from 'vue-i18n';
 
 import englishBaseText from './locales/en.json';
 import type { BaseTextKey, LocaleMessages, INodeTranslationHeaders } from './types';
@@ -17,7 +18,11 @@ export type * from './types';
 const defaultLocale: string = 'en';
 const defaultMessages: Record<string, typeof englishBaseText> = { en: englishBaseText };
 
-export const i18nInstance = createI18n({
+// Widened from the inferred type: vue-i18n otherwise resolves every t() call against a
+// schema of all ~7.7k en.json keys, costing tens of seconds of typecheck in each consumer.
+// Key safety is enforced at the baseText(key: BaseTextKey) boundary instead.
+type LooseSchema = Record<string, unknown>;
+export const i18nInstance: I18n<LooseSchema, LooseSchema, LooseSchema, string, false> = createI18n({
 	legacy: false,
 	locale: defaultLocale,
 	fallbackLocale: defaultLocale,

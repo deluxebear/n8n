@@ -17,7 +17,7 @@ Reference these guidelines when:
 
 ## Rules
 - Follow guidelines in `packages/frontend/@n8n/design-system/src/styleguide/*.mdx`
-- ALWAYS use CSS variables for styles from `packages/frontend/@n8n/design-system/src/css/_tokens.scss` or `packages/frontend/@n8n/design-system/src/css/_primtivies.scss`. Use hard-coded values only when no suitable tokens.
+- ALWAYS use CSS variables for styles from `packages/frontend/@n8n/design-system/src/css/_tokens.scss` or `packages/frontend/@n8n/design-system/src/css/_primitives.scss`. Use hard-coded values only when no suitable tokens.
 - ALWAYS prefer using existing components from `packages/frontend/@n8n/design-system/src/components`. Prefer components that aren't marked `@deprecated`.
 - Use `light-dark()` when alternating colors for ligh/dark mode
 - If you need to add hover/active alpha behavior to solid components, prefer `color-mix()` with explicit percentages.

@@ -2,12 +2,12 @@ import { createComponentRenderer } from '@/__tests__/render';
 import { createTestingPinia } from '@pinia/testing';
 import { within } from '@testing-library/vue';
 import userEvent from '@testing-library/user-event';
-import { useRolesStore } from '@/app/stores/roles.store';
+import { useRolesStore } from '@n8n/stores/roles.store';
+import { useRBACStore } from '@n8n/stores/rbac.store';
 import { mockedStore, type MockedStore } from '@/__tests__/utils';
 import InstanceRolesView from './InstanceRolesView.vue';
 import { useSettingsStore } from '@/app/stores/settings.store';
 import { useUsersStore } from '@n8n/stores/users.store';
-import { useRBACStore } from '@n8n/stores/rbac.store';
 
 vi.mock('vue-router', async () => {
 	const actual = await vi.importActual('vue-router');
@@ -17,7 +17,7 @@ vi.mock('vue-router', async () => {
 	};
 });
 
-vi.mock('@/app/composables/useToast', () => ({
+vi.mock('@n8n/composables/useToast', () => ({
 	useToast: () => ({ showMessage: vi.fn(), showError: vi.fn() }),
 }));
 
