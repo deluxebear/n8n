@@ -26,20 +26,20 @@ describe('EnterpriseWorkflowService', () => {
 		mockInstance(Telemetry);
 
 		service = new EnterpriseWorkflowService(
-			mock(),
+			mock(), // logger
 			Container.get(SharedWorkflowRepository),
 			Container.get(WorkflowRepository),
 			Container.get(CredentialsRepository),
-			mock(),
-			mock(),
-			mock(),
-			mock(),
-			mock(),
-			mock(),
-			mock(),
-			mock(),
-			mock(),
-			mock(),
+			mock(), // credentialsService
+			mock(), // ownershipService
+			mock(), // projectService
+			mock(), // activeWorkflowManager
+			mock(), // credentialsFinderService
+			mock(), // enterpriseCredentialsService
+			mock(), // workflowFinderService
+			mock(), // folderRepository
+			mock(), // workflowPublishHistoryRepository
+			mock(), // workflowMutationHooks
 		);
 	});
 

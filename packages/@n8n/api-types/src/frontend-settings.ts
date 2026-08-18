@@ -345,11 +345,15 @@ export type FrontendModuleSettings = {
 		browserUseEnabled: boolean;
 		proxyEnabled: boolean;
 		cloudManaged: boolean;
+		/** Whether model, sandbox, and the explicit web-search decision are configured. */
+		setupCompleted?: boolean;
 		sandboxEnabled: boolean;
 		workflowBuilderAvailable: boolean;
 		sandboxUnavailableReason: string | null;
 		/** When true, orchestrator LLM step / workflow code debug is captured (`N8N_INSTANCE_AI_RUN_DEBUG_ENABLED`). */
 		runDebugEnabled: boolean;
+		/** Whether this instance is in the activation-capped trial cohort (`N8N_INSTANCE_AI_ACTIVATION_CAPPED`). Optional. */
+		activationCapped?: boolean;
 	};
 
 	/**

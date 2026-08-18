@@ -186,4 +186,24 @@ export class InstanceAiConfig {
 	/** Enable extended thinking / reasoning for the orchestrator agent. */
 	@Env('N8N_INSTANCE_AI_THINKING_ENABLED')
 	thinkingEnabled: boolean = true;
+
+	/**
+	 * Let the assistant discover and connect MCP registry servers.
+	 * Force enable the `089_instance_ai_mcp_connections` PostHog flag
+	 */
+	@Env('N8N_INSTANCE_AI_MCP_CONNECTIONS_ENABLED')
+	mcpConnectionsEnabled: boolean = false;
+
+	/**
+	 * Activation-capped trial variant for n8n cloud experiment.
+	 * Set by the cloud dashboard at deploy time on one signup-experiment cohort only.
+	 */
+	@Env('N8N_INSTANCE_AI_ACTIVATION_CAPPED')
+	activationCapped: boolean = false;
+
+	/**
+	 * How many assistant messages the instance must have sent before {@link activationCapped} locking may apply.
+	 */
+	@Env('N8N_INSTANCE_AI_ACTIVATION_LOCK_MESSAGE_THRESHOLD')
+	activationLockMessageThreshold: number = 1;
 }

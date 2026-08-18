@@ -19,7 +19,7 @@ import { useProjectsStore } from '@/features/collaboration/projects/projects.sto
 import type { Project } from '@/features/collaboration/projects/projects.types';
 import { useNDVStore } from '@/features/ndv/shared/ndv.store';
 import { useUIStore } from '@/app/stores/ui.store';
-import { useSettingsStore } from '@/app/stores/settings.store';
+import { useSettingsStore } from '@n8n/stores/settings.store';
 import { useNodeTypesStore } from '@/app/stores/nodeTypes.store';
 import { useWorkflowsStore } from '@/app/stores/workflows.store';
 import { useAiGateway } from '@/app/composables/useAiGateway';
@@ -250,6 +250,20 @@ describe('NodeCredentials', () => {
 		await userEvent.click(credentialsSelect);
 
 		expect(screen.queryByText('OpenAi account')).toBeInTheDocument();
+	});
+
+	it('replaces the type-derived field label when credentialsFieldLabel is set', () => {
+		ndvStore.activeNode = httpNode;
+		credentialsStore.state.credentials = {
+			c8vqdPpPClh4TgIO: createCredential(),
+		};
+
+		renderComponent(
+			{ props: { credentialsFieldLabel: 'fal.ai API Key credentials' } },
+			{ merge: true },
+		);
+
+		expect(screen.getByTestId('credentials-label')).toHaveTextContent('fal.ai API Key credentials');
 	});
 
 	it('renders standalone when no active workflow document store is provided', () => {

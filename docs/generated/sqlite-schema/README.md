@@ -11,6 +11,7 @@ Auto-generated from the SQLite migrations in @n8n/db. Do not edit by hand.
 | [agent_chat_attachments](agent_chat_attachments.md) | 12 |  | table |
 | [agent_chat_subscriptions](agent_chat_subscriptions.md) | 6 |  | table |
 | [agent_checkpoints](agent_checkpoints.md) | 6 |  | table |
+| [agent_credential_dependency](agent_credential_dependency.md) | 3 |  | table |
 | [agent_eval_dataset](agent_eval_dataset.md) | 10 |  | table |
 | [agent_eval_rating](agent_eval_rating.md) | 8 |  | table |
 | [agent_eval_result](agent_eval_result.md) | 15 |  | table |
@@ -121,7 +122,7 @@ Auto-generated from the SQLite migrations in @n8n/db. Do not edit by hand.
 | [workflow_dependency](workflow_dependency.md) | 9 |  | table |
 | [workflow_entity](workflow_entity.md) | 20 |  | table |
 | [workflow_history](workflow_history.md) | 11 |  | table |
-| [workflow_publication_outbox](workflow_publication_outbox.md) | 7 |  | table |
+| [workflow_publication_outbox](workflow_publication_outbox.md) | 8 |  | table |
 | [workflow_publication_trigger_status](workflow_publication_trigger_status.md) | 8 |  | table |
 | [workflow_publish_history](workflow_publish_history.md) | 6 |  | table |
 | [workflow_published_version](workflow_published_version.md) | 4 |  | table |
@@ -141,6 +142,8 @@ erDiagram
 "agent_chat_attachments" }o--o| "agents" : "FOREIGN KEY (agentId) REFERENCES agents (id) ON UPDATE NO ACTION ON DELETE CASCADE MATCH NONE"
 "agent_chat_subscriptions" |o--|| "agents" : "FOREIGN KEY (agentId) REFERENCES agents (id) ON UPDATE NO ACTION ON DELETE CASCADE MATCH NONE"
 "agent_checkpoints" }o--o| "agents" : "FOREIGN KEY (agentId) REFERENCES agents (id) ON UPDATE NO ACTION ON DELETE CASCADE MATCH NONE"
+"agent_credential_dependency" |o--|| "credentials_entity" : "FOREIGN KEY (credentialId) REFERENCES credentials_entity (id) ON UPDATE NO ACTION ON DELETE CASCADE MATCH NONE"
+"agent_credential_dependency" |o--|| "agents" : "FOREIGN KEY (agentId) REFERENCES agents (id) ON UPDATE NO ACTION ON DELETE CASCADE MATCH NONE"
 "agent_eval_dataset" }o--o| "user" : "FOREIGN KEY (createdById) REFERENCES user (id) ON UPDATE NO ACTION ON DELETE SET NULL MATCH NONE"
 "agent_eval_dataset" }o--|| "agents" : "FOREIGN KEY (agentId) REFERENCES agents (id) ON UPDATE NO ACTION ON DELETE CASCADE MATCH NONE"
 "agent_eval_rating" }o--o| "user" : "FOREIGN KEY (ratedById) REFERENCES user (id) ON UPDATE NO ACTION ON DELETE SET NULL MATCH NONE"
@@ -347,6 +350,11 @@ erDiagram
   varchar_255_ runId PK
   TEXT state
   datetime_3_ updatedAt
+}
+"agent_credential_dependency" {
+  varchar_36_ agentId PK
+  datetime_3_ createdAt
+  varchar_36_ credentialId PK
 }
 "agent_eval_dataset" {
   varchar_36_ agentId FK
@@ -1459,6 +1467,7 @@ erDiagram
   TEXT errorMessage
   INTEGER id
   varchar_36_ publishedVersionId
+  varchar_20_ reason
   varchar_20_ status
   datetime_3_ updatedAt
   varchar_36_ workflowId

@@ -358,6 +358,9 @@ describe('GlobalConfig', () => {
 			runDebugEnabled: false,
 			thinkingEnabled: true,
 			durableLog: true,
+			mcpConnectionsEnabled: false,
+			activationCapped: false,
+			activationLockMessageThreshold: 1,
 		},
 		queue: {
 			health: {
@@ -554,6 +557,9 @@ describe('GlobalConfig', () => {
 		aiAssistant: {
 			baseUrl: '',
 		},
+		aiGateway: {
+			enabled: true,
+		},
 		aiBuilder: {
 			apiKey: '',
 		},
@@ -623,7 +629,7 @@ describe('GlobalConfig', () => {
 			trimOnStartUp: false,
 		},
 		expressionEngine: {
-			engine: 'legacy',
+			engine: 'vm',
 			poolSize: 1,
 			maxCodeCacheSize: 1024,
 			bridgeTimeout: 5000,
@@ -632,6 +638,7 @@ describe('GlobalConfig', () => {
 			tracesEnabled: true,
 			slowEvaluationThresholdMs: 50,
 			tracesSampleRate: 0.0,
+			allowWebhookIsolateSkip: true,
 		},
 		instanceSettingsLoader: {
 			ownerManagedByEnv: false,
@@ -970,6 +977,24 @@ describe('GlobalConfig', () => {
 			process.env = { N8N_WORKFLOW_PUBLICATION_CONCURRENCY: '3' };
 			const config = Container.get(GlobalConfig);
 			expect(config.workflows.workflowPublicationConcurrency).toBe(3);
+		});
+
+		it('should reject an outbox lease above one day and fall back to the default', () => {
+			process.env = { N8N_WORKFLOW_PUBLICATION_OUTBOX_LEASE_SECONDS: `${100 * 24 * 60 * 60}` };
+			const config = Container.get(GlobalConfig);
+			expect(config.workflows.publicationOutboxLeaseSeconds).toBe(120);
+			expect(consoleWarnMock).toHaveBeenCalledWith(
+				expect.stringContaining('N8N_WORKFLOW_PUBLICATION_OUTBOX_LEASE_SECONDS'),
+			);
+		});
+
+		it('should reject an outbox lease of 0 and fall back to the default', () => {
+			process.env = { N8N_WORKFLOW_PUBLICATION_OUTBOX_LEASE_SECONDS: '0' };
+			const config = Container.get(GlobalConfig);
+			expect(config.workflows.publicationOutboxLeaseSeconds).toBe(120);
+			expect(consoleWarnMock).toHaveBeenCalledWith(
+				expect.stringContaining('N8N_WORKFLOW_PUBLICATION_OUTBOX_LEASE_SECONDS'),
+			);
 		});
 	});
 

@@ -84,8 +84,8 @@ defineExpose({
 		@click.stop.prevent
 	>
 		<N8nDropdownMenu
-			ref="dropdownRef"
 			:id="dropdownId"
+			ref="dropdownRef"
 			:items="items"
 			content-test-id="action-toggle-dropdown"
 			:modal="false"

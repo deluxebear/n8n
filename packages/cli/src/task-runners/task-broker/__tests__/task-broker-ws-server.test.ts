@@ -1,3 +1,4 @@
+import type { Logger } from '@n8n/backend-common';
 import type { GlobalConfig, TaskRunnersConfig } from '@n8n/config';
 import { Time } from '@n8n/constants';
 import { mock } from 'vitest-mock-extended';
@@ -42,15 +43,17 @@ const createServer = ({
 	heartbeatInterval = 30,
 	runnerLifecycleEvents = mock<TaskRunnerLifecycleEvents>(),
 	eventService = mock<EventService>(),
+	logger = mock<Logger>(),
 }: {
 	taskBroker?: TaskBroker;
 	disconnectAnalyzer?: DefaultTaskRunnerDisconnectAnalyzer;
 	heartbeatInterval?: number;
 	runnerLifecycleEvents?: TaskRunnerLifecycleEvents;
 	eventService?: EventService;
+	logger?: Logger;
 } = {}) =>
 	new TaskBrokerWsServer(
-		mock(),
+		logger,
 		taskBroker,
 		disconnectAnalyzer,
 		mock<TaskRunnersConfig>({ path: '/runners', heartbeatInterval, mode: 'internal' }),
@@ -236,6 +239,53 @@ describe('TaskBrokerWsServer', () => {
 		});
 	});
 
+	describe('duplicate runner ID', () => {
+		const idIsAlreadyTaken = () => expect.stringContaining('N8N_RUNNERS_ID');
+
+		it('should warn when an ID a live runner holds is claimed again', async () => {
+			const logger = mock<Logger>();
+			const server = createServer({ logger });
+
+			await registerOverWs(server, 'test-runner', mockWs());
+			await registerOverWs(server, 'test-runner', mockWs());
+
+			expect(logger.warn).toHaveBeenCalledWith(idIsAlreadyTaken());
+		});
+
+		it('should not warn on a first registration', async () => {
+			const logger = mock<Logger>();
+			const server = createServer({ logger });
+
+			await registerOverWs(server, 'test-runner', mockWs());
+
+			expect(logger.warn).not.toHaveBeenCalledWith(idIsAlreadyTaken());
+		});
+
+		it('should not warn when the holder is already closing, as on a reconnect', async () => {
+			const logger = mock<Logger>();
+			const server = createServer({ logger });
+
+			await registerOverWs(server, 'test-runner', mockWs(WS_CLOSING));
+			await registerOverWs(server, 'test-runner', mockWs());
+
+			expect(logger.warn).not.toHaveBeenCalledWith(idIsAlreadyTaken());
+		});
+
+		it('should not warn when the holder stopped answering heartbeats', async () => {
+			const logger = mock<Logger>();
+			const server = createServer({ logger });
+
+			// `add` marks every new connection alive, so go stale only after registering
+			const holder = mockWs();
+			await registerOverWs(server, 'test-runner', holder);
+			holder.isAlive = false;
+
+			await registerOverWs(server, 'test-runner', mockWs());
+
+			expect(logger.warn).not.toHaveBeenCalledWith(idIsAlreadyTaken());
+		});
+	});
+
 	describe('heartbeat timer', () => {
 		const DEAD = false;
 
@@ -309,21 +359,14 @@ describe('TaskBrokerWsServer', () => {
 			expect(liveWs.close).not.toHaveBeenCalled();
 		});
 
-		it('should report the dead runner with its task types', async () => {
+		it('should report only the dead runner', async () => {
 			const runnerLifecycleEvents = mock<TaskRunnerLifecycleEvents>();
-			const taskBroker = mockTaskBroker([
-				{ id: 'runner-0', taskTypes: ['python'] },
-				{ id: 'runner-1', taskTypes: ['javascript'] },
-			]);
 
-			await runHeartbeatCheck([mockWs(WS_OPEN, DEAD), mockWs()], {
-				taskBroker,
-				runnerLifecycleEvents,
-			});
+			await runHeartbeatCheck([mockWs(WS_OPEN, DEAD), mockWs()], { runnerLifecycleEvents });
 
 			expect(runnerLifecycleEvents.emit).toHaveBeenCalledExactlyOnceWith(
 				'runner:failed-heartbeat-check',
-				{ runnerId: 'runner-0', taskTypes: ['python'] },
+				{ runnerId: 'runner-0' },
 			);
 		});
 	});
@@ -337,10 +380,7 @@ describe('TaskBrokerWsServer', () => {
 			server.runnerConnections.set('test-runner', ws);
 			server.start();
 
-			runnerLifecycleEvents.emit('runner:unresponsive', {
-				runnerId: 'test-runner',
-				taskTypes: ['javascript'],
-			});
+			runnerLifecycleEvents.emit('runner:unresponsive', { runnerId: 'test-runner' });
 
 			expect(ws.close).toHaveBeenCalledWith(WsStatusCodes.CloseProtocolError);
 			expect(disconnectAnalyzer.toDisconnectError).toHaveBeenCalledWith(
@@ -358,10 +398,7 @@ describe('TaskBrokerWsServer', () => {
 
 			const ws = mockWs();
 			server.runnerConnections.set('test-runner', ws);
-			runnerLifecycleEvents.emit('runner:unresponsive', {
-				runnerId: 'test-runner',
-				taskTypes: ['javascript'],
-			});
+			runnerLifecycleEvents.emit('runner:unresponsive', { runnerId: 'test-runner' });
 
 			expect(ws.close).not.toHaveBeenCalled();
 		});
