@@ -8500,5 +8500,7 @@
   "agents.channels.discord.setup.interactionsEndpoint.description": "Discord 将按钮点击传送到此 URL。消息通过单独的连接到达您的代理，因此没有它，代理仍然可以聊天，但批准按钮将不起作用。",
   "agents.channels.discord.setup.interactionsEndpoint.hint": "连接并发布代理后，将其保存为应用程序的“常规信息”页面上的“交互端点 URL”。",
   "agents.builder.addTrigger.discord.interactionsUrl.label": "交互端点 URL",
-  "agents.channels.modal.setupLoadError": "无法加载频道设置。再试一次。"
+  "agents.channels.modal.setupLoadError": "无法加载频道设置。再试一次。",
+  "insights.dashboard.error.forbidden.title": "无法加载洞察",
+  "insights.dashboard.error.forbidden.message": "您无权访问此项目的洞察"
 }
