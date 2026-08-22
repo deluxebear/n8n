@@ -2,7 +2,7 @@ name: 'Docker: Build and Push (CHS tags only)'
 
 env:
   NODE_OPTIONS: '--max-old-space-size=8192'
-  NODE_VERSION: '24.13.1'
+  NODE_VERSION: '24.18.1'
   # 推 tag 时用 tag 名；手动 workflow_dispatch 时用输入的 release_tag
   CHS_RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
 
