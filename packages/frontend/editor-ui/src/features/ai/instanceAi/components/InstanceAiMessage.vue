@@ -173,21 +173,6 @@ function formatJson(value: unknown): string {
 				</template>
 			</N8nCallout>
 
-			<!-- Out-of-credits (quota exhausted): tailored state, hides raw provider/status noise -->
-			<N8nCallout v-if="isQuotaExhausted" theme="warning" data-test-id="instance-ai-out-of-credits">
-				{{ i18n.baseText('instanceAi.error.outOfCredits.title') }}
-				<template #trailingContent>
-					<N8nButton
-						variant="outline"
-						size="xsmall"
-						data-test-id="instance-ai-out-of-credits-upgrade"
-						@click="goToUpgrade('instance-ai', 'upgrade-instance-ai')"
-					>
-						{{ i18n.baseText('instanceAi.error.outOfCredits.upgrade') }}
-					</N8nButton>
-				</template>
-			</N8nCallout>
-
 			<!-- Run-level error -->
 			<N8nCallout v-else-if="runError" theme="danger">
 				<div :class="$style.runLevelError">

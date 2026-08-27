@@ -1,7 +1,7 @@
 import { isValidTimeZone } from '@n8n/api-types';
 import { GlobalConfig } from '@n8n/config';
 import type { User } from '@n8n/db';
-import { sql, SharedWorkflowRepository } from '@n8n/db';
+import { parseListQuerySortBy, sql, SharedWorkflowRepository } from '@n8n/db';
 import { Container, Service } from '@n8n/di';
 import type { SelectQueryBuilder } from '@n8n/typeorm';
 import { DataSource, LessThanOrEqual, Repository } from '@n8n/typeorm';
@@ -400,11 +400,6 @@ export class InsightsByPeriodRepository extends Repository<InsightsByPeriod> {
 		return summaryParser.parse(rawRows);
 	}
 
-	private parseSortingParams(sortBy: string): [string, 'ASC' | 'DESC'] {
-		const [column, order] = sortBy.split(':');
-		return [column, order.toUpperCase() as 'ASC' | 'DESC'];
-	}
-
 	private async countInsightsByWorkflowGroups(
 		rawRowsQuery: SelectQueryBuilder<InsightsByPeriod>,
 	): Promise<number> {
@@ -437,7 +432,7 @@ export class InsightsByPeriodRepository extends Repository<InsightsByPeriod> {
 		timeZone?: string;
 		accessFilter?: InsightsAccessFilter;
 	}) {
-		const [sortField, sortOrder] = this.parseSortingParams(sortBy);
+		const { column: sortField, direction: sortOrder } = parseListQuerySortBy(sortBy);
 		const sumOfExecutions = sql`SUM(CASE WHEN insights.type IN (${TypeToNumber.success.toString()}, ${TypeToNumber.failure.toString()}) THEN value ELSE 0 END)`;
 
 		const cte = getDateRangesCommonTableExpressionQuery({ dbType, startDate, endDate, timeZone });
