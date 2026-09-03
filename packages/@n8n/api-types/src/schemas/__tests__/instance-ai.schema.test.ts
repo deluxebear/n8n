@@ -10,11 +10,13 @@ import {
 	instanceAiFileAttachmentSchema,
 	MAX_ATTACHMENT_BASE64_BYTES,
 	applyBranchReadOnlyOverrides,
+	buildCredentialDestinationGrantKey,
 	buildDataTablesSessionGrantKey,
 	buildUpdateWorkflowSessionGrantKey,
 	buildSetupSkipGrantKey,
 	parseSetupSkipGrants,
 	buildFetchUrlGrantKey,
+	confirmationRequestPayloadSchema,
 	DEFAULT_INSTANCE_AI_PERMISSIONS,
 	errorPayloadSchema,
 	FETCH_URL_ALLOW_ALL_GRANT_KEY,
@@ -24,6 +26,10 @@ import {
 	InstanceAiEnsureThreadRequest,
 	findUnbackedSeedWorkflowTools,
 	InstanceAiEvalRestoreThreadRequest,
+	InstanceAiThreadMessagesQuery,
+	INSTANCE_AI_THREAD_MESSAGES_DEFAULT_LIMIT,
+	INSTANCE_AI_THREAD_MESSAGES_MAX_LIMIT,
+	INSTANCE_AI_THREAD_MESSAGES_MAX_PAGE,
 	instanceAiEvalSeedAgentSchema,
 	instanceAiAttachmentSchema,
 	instanceAiResourceAttachmentSchema,
@@ -225,6 +231,38 @@ function makeConfirmation(
 		...overrides,
 	};
 }
+
+describe('confirmationRequestPayloadSchema', () => {
+	it('preserves an explicit credential selection requirement', () => {
+		const payload = makeConfirmation({ requireUserSelection: true });
+
+		expect(confirmationRequestPayloadSchema.parse(payload)).toEqual(payload);
+	});
+
+	it('preserves a credential destination requiring approval', () => {
+		const payload = makeConfirmation({
+			credentialDestination: {
+				origin: 'https://api.example.com',
+				nodeNames: ['Fetch account'],
+			},
+		});
+
+		expect(confirmationRequestPayloadSchema.parse(payload)).toEqual(payload);
+	});
+
+	it('requires a credential destination to be an exact HTTP origin', () => {
+		const result = confirmationRequestPayloadSchema.safeParse(
+			makeConfirmation({
+				credentialDestination: {
+					origin: 'https://api.example.com/v1',
+					nodeNames: ['Fetch account'],
+				},
+			}),
+		);
+
+		expect(result.success).toBe(false);
+	});
+});
 
 describe('isDisplayableConfirmationRequest', () => {
 	it('treats approval and text messages as displayable', () => {
@@ -456,6 +494,14 @@ describe('data-tables session grant keys', () => {
 describe('workflow update session grant keys', () => {
 	it('builds per-workflow keys matching the frontend always-allow format', () => {
 		expect(buildUpdateWorkflowSessionGrantKey('wf-1')).toBe('workflows:update:wf-1');
+	});
+});
+
+describe('credential destination session grant keys', () => {
+	it('encodes the workflow and exact origin', () => {
+		expect(buildCredentialDestinationGrantKey('workflow:1', 'https://api.example.com:8443')).toBe(
+			'credential-destination:workflow%3A1:https%3A%2F%2Fapi.example.com%3A8443',
+		);
 	});
 });
 
@@ -886,5 +932,41 @@ describe('instanceAiAttachmentSchema — nodes attachment', () => {
 	it('is also accepted by instanceAiResourceAttachmentSchema', () => {
 		const result = instanceAiResourceAttachmentSchema.safeParse(nodesAttachment());
 		expect(result.success).toBe(true);
+	});
+});
+
+describe('InstanceAiThreadMessagesQuery', () => {
+	it('defaults to the first page at the default limit', () => {
+		expect(InstanceAiThreadMessagesQuery.parse({})).toEqual({
+			limit: INSTANCE_AI_THREAD_MESSAGES_DEFAULT_LIMIT,
+			page: 0,
+		});
+	});
+
+	it('coerces the string query params a URL carries', () => {
+		expect(InstanceAiThreadMessagesQuery.parse({ limit: '25', page: '2', raw: 'true' })).toEqual({
+			limit: 25,
+			page: 2,
+			raw: 'true',
+		});
+	});
+
+	it('accepts the ceilings', () => {
+		const result = InstanceAiThreadMessagesQuery.safeParse({
+			limit: INSTANCE_AI_THREAD_MESSAGES_MAX_LIMIT,
+			page: INSTANCE_AI_THREAD_MESSAGES_MAX_PAGE,
+		});
+		expect(result.success).toBe(true);
+	});
+
+	it.each([
+		{ limit: INSTANCE_AI_THREAD_MESSAGES_MAX_LIMIT + 1 },
+		{ limit: 0 },
+		{ limit: -1 },
+		{ limit: 1.5 },
+		{ page: INSTANCE_AI_THREAD_MESSAGES_MAX_PAGE + 1 },
+		{ page: -1 },
+	])('rejects out-of-range paging (%o)', (query) => {
+		expect(InstanceAiThreadMessagesQuery.safeParse(query).success).toBe(false);
 	});
 });

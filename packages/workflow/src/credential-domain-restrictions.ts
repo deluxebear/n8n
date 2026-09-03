@@ -126,6 +126,21 @@ export function isDomainAllowed(options: { url: string; allowedDomains: string }
 	return false;
 }
 
+/**
+ * The host alone — it is all the allowlist decision uses, and the only part the
+ * reader needs in order to act on the error. Dropping the rest keeps per-request
+ * values out of a message that is persisted with the execution.
+ */
+function toDisplayHost(url: string): string {
+	try {
+		return new URL(url).host;
+	} catch {
+		// No host to name. Fall back to the URL without the parts that carry
+		// per-request values: cut at the first `?`/`#` and drop any `user:pass@`.
+		return url.split(/[?#]/)[0].replace(/^([A-Za-z][\w+.-]*:\/\/)[^/@]*@/, '$1');
+	}
+}
+
 /** Hostname of an absolute URL, normalised for matching. `undefined` when there is none. */
 function toHostname(url: string | undefined): string | undefined {
 	if (!url) return undefined;
@@ -146,7 +161,7 @@ export function assertUrlAllowed(options: {
 	if (!allowedDomains) return;
 	if (isDomainAllowed({ url, allowedDomains })) return;
 
-	const message = `Domain not allowed: This credential is restricted from accessing ${url}. Only the following domains are allowed: ${allowedDomains}`;
+	const message = `Domain not allowed: This credential is restricted from accessing ${toDisplayHost(url)}. Only the following domains are allowed: ${allowedDomains}`;
 	throw node ? new NodeOperationError(node, message) : new UserError(message);
 }
 

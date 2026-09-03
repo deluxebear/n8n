@@ -19,6 +19,7 @@ import {
 	resolveRouteArgs,
 	resolveSuccessStatus,
 } from '@/public-api/public-api-route-resolver';
+import { formatValidationError } from '@/public-api/public-api-validation-error';
 import { deprecated } from '@/public-api/v1/shared/middlewares/global.middleware';
 import { sendPublicApiErrorResponse } from '@/public-api/v1/public-api-error-response';
 import { AuthStrategyRegistry } from '@/services/auth-strategy.registry';
@@ -76,7 +77,7 @@ export class PublicApiControllerRegistry {
 						if (output.success) {
 							args.push(output.data);
 						} else {
-							throw new BadRequestError(output.error.errors[0]?.message ?? 'Invalid request');
+							throw new BadRequestError(formatValidationError(arg.type, output.error));
 						}
 					}
 				}

@@ -755,6 +755,39 @@ describe('agent-run-reducer', () => {
 			});
 		});
 
+		it('confirmation-request passes through credential destination metadata when present', () => {
+			const state = stateWithRun('run-1', 'root');
+			reduceEvent(state, makeToolCall('run-1', 'root', 'tc-1', 'workflows'));
+			reduceEvent(state, {
+				type: 'confirmation-request',
+				runId: 'run-1',
+				agentId: 'root',
+				payload: {
+					requestId: 'req-destination',
+					toolCallId: 'tc-1',
+					toolName: 'workflows',
+					args: { action: 'setup' },
+					severity: 'warning',
+					message: 'Review where this credential will be used',
+					credentialDestination: {
+						origin: 'https://api.example.com',
+						nodeNames: ['Fetch data'],
+					},
+				},
+			});
+
+			const tc = state.toolCallsById['tc-1'];
+			expect(tc.confirmation).toEqual({
+				requestId: 'req-destination',
+				severity: 'warning',
+				message: 'Review where this credential will be used',
+				credentialDestination: {
+					origin: 'https://api.example.com',
+					nodeNames: ['Fetch data'],
+				},
+			});
+		});
+
 		it('confirmation-request passes through projectId when present', () => {
 			const state = stateWithRun('run-1', 'root');
 			reduceEvent(state, makeToolCall('run-1', 'root', 'tc-1', 'setup-credentials'));
@@ -779,6 +812,33 @@ describe('agent-run-reducer', () => {
 				severity: 'info',
 				message: 'Select credentials',
 				projectId: 'proj-456',
+			});
+		});
+
+		it('confirmation-request preserves explicit credential selection on replay', () => {
+			const state = stateWithRun('run-1', 'root');
+			reduceEvent(state, makeToolCall('run-1', 'root', 'tc-1', 'setup-credentials'));
+			reduceEvent(state, {
+				type: 'confirmation-request',
+				runId: 'run-1',
+				agentId: 'root',
+				payload: {
+					requestId: 'req-2',
+					toolCallId: 'tc-1',
+					toolName: 'setup-credentials',
+					args: {},
+					severity: 'info',
+					message: 'Select credentials',
+					requireUserSelection: true,
+				},
+			});
+
+			const tc = state.toolCallsById['tc-1'];
+			expect(tc.confirmation).toEqual({
+				requestId: 'req-2',
+				severity: 'info',
+				message: 'Select credentials',
+				requireUserSelection: true,
 			});
 		});
 	});

@@ -3,6 +3,7 @@ import type {
 	FindOneAndUpdateOptions,
 	UpdateOptions,
 	Sort,
+	MongoClient,
 } from 'mongodb';
 import { ObjectId } from 'mongodb';
 import { NodeConnectionTypes, NodeOperationError, UserError } from 'n8n-workflow';
@@ -15,7 +16,6 @@ import type {
 	INodeExecutionData,
 	INodeType,
 	INodeTypeDescription,
-	JsonObject,
 	IPairedItemData,
 } from 'n8n-workflow';
 
@@ -26,6 +26,7 @@ import {
 	connectMongoClient,
 	prepareFields,
 	prepareItems,
+	sanitizeMongoUriInMessage,
 	serializeMongoItems,
 	stringifyObjectIDs,
 	validateAndResolveMongoCredentials,
@@ -65,10 +66,10 @@ export class MongoDb implements INodeType {
 				credential: ICredentialsDecrypted,
 			): Promise<INodeCredentialTestResult> {
 				const credentials = credential.data as IDataObject;
+				let connectionString = '';
 
 				try {
 					const database = ((credentials.database as string) || '').trim();
-					let connectionString = '';
 
 					if (credentials.configurationType === 'connectionString') {
 						connectionString = ((credentials.connectionString as string) || '').trim();
@@ -93,7 +94,7 @@ export class MongoDb implements INodeType {
 				} catch (error) {
 					return {
 						status: 'Error',
-						message: (error as Error).message,
+						message: sanitizeMongoUriInMessage(error, connectionString),
 					};
 				}
 				return {
@@ -109,7 +110,14 @@ export class MongoDb implements INodeType {
 		const node = this.getNode();
 		const { database, connectionString } = validateAndResolveMongoCredentials(node, credentials);
 		const nodeVersion = node.typeVersion;
-		const client = await connectMongoClient(connectionString, nodeVersion, credentials);
+		const sanitizeErrorMessage = (error: unknown) =>
+			sanitizeMongoUriInMessage(error, connectionString);
+		let client: MongoClient;
+		try {
+			client = await connectMongoClient(connectionString, nodeVersion, credentials);
+		} catch (error) {
+			throw new NodeOperationError(node, sanitizeErrorMessage(error));
+		}
 		let returnData: INodeExecutionData[] = [];
 
 		try {
@@ -151,7 +159,7 @@ export class MongoDb implements INodeType {
 					} catch (error) {
 						if (this.continueOnFail()) {
 							returnData.push({
-								json: { error: (error as JsonObject).message },
+								json: { error: sanitizeErrorMessage(error) },
 								pairedItem: fallbackPairedItems ?? [{ item: i }],
 							});
 							continue;
@@ -181,7 +189,7 @@ export class MongoDb implements INodeType {
 					} catch (error) {
 						if (this.continueOnFail()) {
 							returnData.push({
-								json: { error: (error as JsonObject).message },
+								json: { error: sanitizeErrorMessage(error) },
 								pairedItem: fallbackPairedItems ?? [{ item: i }],
 							});
 							continue;
@@ -242,7 +250,7 @@ export class MongoDb implements INodeType {
 					} catch (error) {
 						if (this.continueOnFail()) {
 							returnData.push({
-								json: { error: (error as JsonObject).message },
+								json: { error: sanitizeErrorMessage(error) },
 								pairedItem: fallbackPairedItems ?? [{ item: i }],
 							});
 							continue;
@@ -302,7 +310,7 @@ export class MongoDb implements INodeType {
 						} catch (error) {
 							if (this.continueOnFail()) {
 								returnData.push({
-									json: { error: (error as JsonObject).message },
+									json: { error: sanitizeErrorMessage(error) },
 									pairedItem: { item: i },
 								});
 								continue;
@@ -349,7 +357,7 @@ export class MongoDb implements INodeType {
 								.findOneAndReplace(filter, item, updateOptions as FindOneAndReplaceOptions);
 						} catch (error) {
 							if (this.continueOnFail()) {
-								item.json = { error: (error as JsonObject).message };
+								item.json = { error: sanitizeErrorMessage(error) };
 								continue;
 							}
 							throw error;
@@ -414,7 +422,7 @@ export class MongoDb implements INodeType {
 						} catch (error) {
 							if (this.continueOnFail()) {
 								returnData.push({
-									json: { error: (error as JsonObject).message },
+									json: { error: sanitizeErrorMessage(error) },
 									pairedItem: { item: i },
 								});
 								continue;
@@ -462,7 +470,7 @@ export class MongoDb implements INodeType {
 								.findOneAndUpdate(filter, { $set: item }, updateOptions as FindOneAndUpdateOptions);
 						} catch (error) {
 							if (this.continueOnFail()) {
-								item.json = { error: (error as JsonObject).message };
+								item.json = { error: sanitizeErrorMessage(error) };
 								continue;
 							}
 							throw error;
@@ -511,7 +519,7 @@ export class MongoDb implements INodeType {
 						} catch (error) {
 							if (this.continueOnFail()) {
 								returnData.push({
-									json: { error: (error as JsonObject).message },
+									json: { error: sanitizeErrorMessage(error) },
 									pairedItem: { item: i },
 								});
 							} else {
@@ -538,7 +546,7 @@ export class MongoDb implements INodeType {
 							if (this.continueOnFail()) {
 								for (const g of groupItems) {
 									returnData.push({
-										json: { error: (error as JsonObject).message },
+										json: { error: sanitizeErrorMessage(error) },
 										pairedItem: { item: g.originalIndex },
 									});
 								}
@@ -589,7 +597,7 @@ export class MongoDb implements INodeType {
 						}
 					} catch (error) {
 						if (this.continueOnFail()) {
-							responseData = [{ error: (error as JsonObject).message }];
+							responseData = [{ error: sanitizeErrorMessage(error) }];
 						} else {
 							throw error;
 						}
@@ -653,7 +661,7 @@ export class MongoDb implements INodeType {
 						} catch (error) {
 							if (this.continueOnFail()) {
 								returnData.push({
-									json: { error: (error as JsonObject).message },
+									json: { error: sanitizeErrorMessage(error) },
 									pairedItem: { item: i },
 								});
 								continue;
@@ -701,7 +709,7 @@ export class MongoDb implements INodeType {
 								.updateOne(filter, { $set: item }, updateOptions as UpdateOptions);
 						} catch (error) {
 							if (this.continueOnFail()) {
-								item.json = { error: (error as JsonObject).message };
+								item.json = { error: sanitizeErrorMessage(error) };
 								continue;
 							}
 							throw error;
@@ -737,7 +745,7 @@ export class MongoDb implements INodeType {
 					} catch (error) {
 						if (this.continueOnFail()) {
 							returnData.push({
-								json: { error: (error as JsonObject).message },
+								json: { error: sanitizeErrorMessage(error) },
 								pairedItem: fallbackPairedItems ?? [{ item: i }],
 							});
 							continue;
@@ -763,7 +771,7 @@ export class MongoDb implements INodeType {
 					} catch (error) {
 						if (this.continueOnFail()) {
 							returnData.push({
-								json: { error: (error as JsonObject).message },
+								json: { error: sanitizeErrorMessage(error) },
 								pairedItem: fallbackPairedItems ?? [{ item: i }],
 							});
 							continue;
@@ -796,7 +804,7 @@ export class MongoDb implements INodeType {
 					} catch (error) {
 						if (this.continueOnFail()) {
 							returnData.push({
-								json: { error: (error as JsonObject).message },
+								json: { error: sanitizeErrorMessage(error) },
 								pairedItem: fallbackPairedItems ?? [{ item: i }],
 							});
 							continue;
@@ -824,7 +832,7 @@ export class MongoDb implements INodeType {
 					} catch (error) {
 						if (this.continueOnFail()) {
 							returnData.push({
-								json: { error: (error as JsonObject).message },
+								json: { error: sanitizeErrorMessage(error) },
 								pairedItem: fallbackPairedItems ?? [{ item: i }],
 							});
 							continue;
@@ -833,6 +841,11 @@ export class MongoDb implements INodeType {
 					}
 				}
 			}
+		} catch (error) {
+			const sanitizedMessage = sanitizeErrorMessage(error);
+			if (error instanceof Error && sanitizedMessage === error.message) throw error;
+
+			throw new NodeOperationError(node, sanitizedMessage);
 		} finally {
 			await client.close().catch(() => {});
 		}

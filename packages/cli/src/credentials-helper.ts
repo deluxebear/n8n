@@ -565,6 +565,7 @@ export class CredentialsHelper extends ICredentialsHelper {
 				decryptedDataOriginal,
 				additionalData.executionContext,
 				additionalData.workflowSettings,
+				additionalData.executionId,
 			);
 			decryptedDataOriginal = resolveResult.data;
 			if (resolveResult.isDynamic) {
@@ -787,6 +788,7 @@ export class CredentialsHelper extends ICredentialsHelper {
 				additionalData.executionContext,
 				staticData,
 				additionalData.workflowSettings,
+				additionalData.executionId,
 			);
 			return;
 		}

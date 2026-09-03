@@ -24,6 +24,7 @@ import {
 	type AgentRunState,
 } from '@n8n/api-types';
 import { useRootStore } from '@n8n/stores/useRootStore';
+import { redactTelemetryProperties } from '@n8n/telemetry';
 import { useToast } from '@n8n/composables/useToast';
 import { useI18n } from '@n8n/i18n';
 import { useTelemetry } from '@n8n/composables/useTelemetry';
@@ -678,6 +679,7 @@ export function createThreadRuntime(
 	function isGenericApprovalEligible(item: PendingConfirmationItem): boolean {
 		const conf = item.toolCall.confirmation;
 		if (conf.targetApproval) return false;
+		if (conf.credentialDestination) return false;
 		if (conf.severity === 'destructive') return false;
 		if (conf.domainAccess) return false;
 		if (conf.inputType) return false;
@@ -715,21 +717,26 @@ export function createThreadRuntime(
 					const ok = await confirmAction(conf.requestId, { kind: 'approval', approved: true });
 					if (!ok) continue;
 					resolveConfirmation(conf.requestId, 'approved');
-					telemetry.track('User finished providing input', {
-						thread_id: threadId,
-						input_thread_id: conf.inputThreadId ?? '',
-						instance_id: rootStore.instanceId,
-						type: 'approval',
-						provided_inputs: [
-							{
-								label: conf.message,
-								options: ['approve', 'deny', 'approve_always'],
-								option_chosen: 'approve_auto',
-							},
-						],
-						skipped_inputs: [],
-						auto_resolved: true,
-					});
+					// `conf.message` is the agent's own description of the action, so it
+					// quotes tool args and recipients — scrub before it leaves the browser.
+					telemetry.track(
+						'User finished providing input',
+						redactTelemetryProperties({
+							thread_id: threadId,
+							input_thread_id: conf.inputThreadId ?? '',
+							instance_id: rootStore.instanceId,
+							type: 'approval',
+							provided_inputs: [
+								{
+									label: conf.message,
+									options: ['approve', 'deny', 'approve_always'],
+									option_chosen: 'approve_auto',
+								},
+							],
+							skipped_inputs: [],
+							auto_resolved: true,
+						}),
+					);
 				} finally {
 					autoApproveInFlight.delete(conf.requestId);
 				}

@@ -17,6 +17,16 @@ n8n 是一个采用公平代码（fair-code）模式的平台，可用于构建�
 
 ## 快速开始
 
+### 使用一键安装脚本
+
+已安装 [Docker](https://www.docker.com/) 时，可直接运行：
+
+```bash
+curl -fsSL https://get.n8n.io | sh
+```
+
+也可以使用以下方式手动启动。
+
 ### 使用 npx
 
 安装 [Node.js](https://nodejs.org/) 后，可以直接启动 n8n：

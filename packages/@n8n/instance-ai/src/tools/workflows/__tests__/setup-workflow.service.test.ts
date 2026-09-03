@@ -161,7 +161,7 @@ describe('buildSetupRequests', () => {
 			expect(result).toHaveLength(1);
 			expect(result[0].parameterIssues?.model).toEqual([
 				'"gpt-6-mini" isn\'t available with the connected credential "n8n free OpenAI API credits". ' +
-					'Pick a value the credential offers instead.',
+					'Pick a value the credential offers instead — use nodes(action="explore-resources") to list allowed models.',
 			]);
 			expect(result[0].needsAction).toBe(true);
 		});
@@ -586,7 +586,7 @@ describe('buildSetupRequests', () => {
 		expect(result[0].isAutoApplied).toBe(true);
 		expect(result[0].node.credentials?.slackApi).toEqual({
 			id: null,
-			name: 'n8n credits',
+			name: 'Gateway credits',
 			__aiGatewayManaged: true,
 		});
 	});
@@ -2149,6 +2149,7 @@ describe('applyCredentialHints', () => {
 		applyCredentialHints(requests, [hint()]);
 
 		expect(requests[0].setupHint?.serviceHost).toBe('queue.fal.run');
+		expect(requests[0].setupHint?.serviceOrigin).toBe('https://queue.fal.run');
 	});
 
 	it('stamps each request with its own node host from a shared type-wide hint', () => {
@@ -2165,16 +2166,20 @@ describe('applyCredentialHints', () => {
 		expect(requests[0].setupHint?.serviceHost).toBe('api.pexels.com');
 		expect(requests[1].setupHint?.serviceHost).toBe('api.apify.com');
 		expect(shared).not.toHaveProperty('serviceHost');
+		expect(requests[0].setupHint?.serviceOrigin).toBe('https://api.pexels.com');
+		expect(requests[1].setupHint?.serviceOrigin).toBe('https://api.apify.com');
+		expect(shared).not.toHaveProperty('serviceOrigin');
 	});
 
-	it('omits serviceHost when the node URL is not derivable', () => {
+	it('omits service identity when the node URL is not derivable', () => {
 		const requests = [request('Call fal.ai', 'httpTemplatedCustomAuth')];
 		requests[0].node.parameters = { url: '={{ $json.url }}' };
 
-		applyCredentialHints(requests, [hint()]);
+		applyCredentialHints(requests, [hint({ testUrl: 'https://fal.run/v1/models' })]);
 
 		expect(requests[0].setupHint).toBeDefined();
 		expect(requests[0].setupHint).not.toHaveProperty('serviceHost');
+		expect(requests[0].setupHint).not.toHaveProperty('serviceOrigin');
 	});
 });
 
@@ -2285,5 +2290,105 @@ describe('buildSetupRequests — Templated Custom Auth service identity', () => 
 		const result = await buildSetupRequests(context, makeNode());
 
 		expect(result[0].existingCredentials).toEqual([{ id: 'cred-slack', name: 'My Slack' }]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// preferNewCredentialTypes (INS-361)
+// ---------------------------------------------------------------------------
+
+describe('setup analysis for credentials the user asked to create fresh', () => {
+	let context: InstanceAiContext;
+
+	beforeEach(() => {
+		context = createMockContext();
+		(context.nodeService.getDescription as Mock).mockResolvedValue({
+			group: [],
+			credentials: [{ name: 'slackApi' }],
+		});
+		(context.credentialService.test as Mock).mockResolvedValue({ success: true });
+	});
+
+	it('does not auto-apply the sole existing credential and flags the request', async () => {
+		(context.credentialService.list as Mock).mockResolvedValue([
+			{ id: 'cred-1', name: 'Slack account', updatedAt: '2025-01-01T00:00:00.000Z' },
+		]);
+
+		const result = await buildSetupRequests(
+			context,
+			makeNode(),
+			undefined,
+			undefined,
+			undefined,
+			new Set(['slackApi']),
+		);
+
+		expect(result[0].isAutoApplied).toBeFalsy();
+		expect(result[0].preferNewCredential).toBe(true);
+		expect(result[0].node.credentials).toBeUndefined();
+		expect(result[0].needsAction).toBe(true);
+		// The user can still change their mind — candidates stay listed.
+		expect(result[0].existingCredentials).toEqual([{ id: 'cred-1', name: 'Slack account' }]);
+	});
+
+	it('does not auto-apply n8n credits either', async () => {
+		(context.credentialService.list as Mock).mockResolvedValue([]);
+		(context.credentialService as unknown as Record<string, unknown>).isAiGatewayCredentialType = vi
+			.fn()
+			.mockResolvedValue(true);
+
+		const result = await buildSetupRequests(
+			context,
+			makeNode(),
+			undefined,
+			undefined,
+			undefined,
+			new Set(['slackApi']),
+		);
+
+		expect(result[0].isAutoApplied).toBeFalsy();
+		expect(result[0].preferNewCredential).toBe(true);
+		expect(result[0].node.credentials).toBeUndefined();
+	});
+
+	it('leaves other credential types auto-applying as usual', async () => {
+		(context.credentialService.list as Mock).mockResolvedValue([
+			{ id: 'cred-1', name: 'Slack account', updatedAt: '2025-01-01T00:00:00.000Z' },
+		]);
+
+		const result = await buildSetupRequests(
+			context,
+			makeNode(),
+			undefined,
+			undefined,
+			undefined,
+			new Set(['telegramApi']),
+		);
+
+		expect(result[0].isAutoApplied).toBe(true);
+		expect(result[0].preferNewCredential).toBeUndefined();
+	});
+
+	it('hands analyzeWorkflow an unfilled card where the default pre-fills one', async () => {
+		(context.workflowService.getAsWorkflowJSON as Mock).mockResolvedValue(
+			makeWorkflowJSON([makeNode()]),
+		);
+		(context.credentialService.list as Mock).mockResolvedValue([
+			{ id: 'cred-1', name: 'Slack account', updatedAt: '2025-01-01T00:00:00.000Z' },
+		]);
+
+		const [byDefault] = await analyzeWorkflow(context, 'wf-1');
+		expect(byDefault.isAutoApplied).toBe(true);
+		expect(byDefault.node.credentials).toEqual({
+			slackApi: { id: 'cred-1', name: 'Slack account' },
+		});
+
+		const [asked] = await analyzeWorkflow(context, 'wf-1', undefined, {
+			preferNewCredentialTypes: ['slackApi'],
+		});
+		expect(asked.preferNewCredential).toBe(true);
+		expect(asked.isAutoApplied).toBeFalsy();
+		expect(asked.node.credentials).toBeUndefined();
+		expect(asked.needsAction).toBe(true);
 	});
 });

@@ -64,6 +64,11 @@ export function buildUpdateWorkflowSessionGrantKey(workflowId: string): string {
 	return `workflows:update:${workflowId}`;
 }
 
+/** Builds the thread-level grant for using a credential with one exact service origin. */
+export function buildCredentialDestinationGrantKey(workflowId: string, origin: string): string {
+	return `credential-destination:${encodeURIComponent(workflowId)}:${encodeURIComponent(origin)}`;
+}
+
 /**
  * Builds the thread-level "always allow" grant key for a data-tables action
  * (e.g. `create`, `insert-rows`). Must match the frontend key
@@ -406,6 +411,18 @@ export const credentialPlaceholderDefSchema = z.object({
 });
 export type InstanceAiCredentialPlaceholderDef = z.infer<typeof credentialPlaceholderDefSchema>;
 
+const exactHttpOriginSchema = z
+	.string()
+	.max(300)
+	.refine((value) => {
+		try {
+			const url = new URL(value);
+			return ['http:', 'https:'].includes(url.protocol) && url.origin === value;
+		} catch {
+			return false;
+		}
+	}, 'Expected an exact HTTP origin');
+
 /**
  * Agent-supplied recipe for creating a Templated Custom Auth credential: the
  * auth request parts with `{{placeholder}}` markers where user-provided values
@@ -432,6 +449,9 @@ export const credentialSetupHintSchema = z.object({
 	 *  being set up (never model-supplied). Stamped into the created credential
 	 *  so setup surfaces only offer it to nodes calling the same service. */
 	serviceHost: z.string().optional(),
+	/** Exact origin of the API the recipe targets, derived server-side from the
+	 *  node being set up. Used to bind automatic credential tests to that API. */
+	serviceOrigin: exactHttpOriginSchema.optional(),
 });
 export type InstanceAiCredentialSetupHint = z.infer<typeof credentialSetupHintSchema>;
 
@@ -441,6 +461,7 @@ export const credentialRequestSchema = z.object({
 	existingCredentials: z.array(z.object({ id: z.string(), name: z.string() })),
 	suggestedName: z.string().optional(),
 	setupHint: credentialSetupHintSchema.optional(),
+	preferNew: z.boolean().optional(),
 });
 
 export type InstanceAiCredentialRequest = z.infer<typeof credentialRequestSchema>;
@@ -449,6 +470,19 @@ export const credentialFlowSchema = z.object({
 	stage: z.enum(['generic', 'finalize']),
 });
 export type InstanceAiCredentialFlow = z.infer<typeof credentialFlowSchema>;
+
+export const credentialDestinationSchema = z.object({
+	origin: exactHttpOriginSchema,
+	nodeNames: z.array(z.string().trim().min(1).max(255)).min(1),
+});
+export type InstanceAiCredentialDestination = z.infer<typeof credentialDestinationSchema>;
+
+export const credentialDestinationDecisionSchema = credentialDestinationSchema.pick({
+	origin: true,
+});
+export type InstanceAiCredentialDestinationDecision = z.infer<
+	typeof credentialDestinationDecisionSchema
+>;
 
 export const workflowSetupNodeSchema = z.object({
 	node: z.object({
@@ -475,6 +509,7 @@ export const workflowSetupNodeSchema = z.object({
 	isFirstTrigger: z.boolean().optional(),
 	isTestable: z.boolean().optional(),
 	isAutoApplied: z.boolean().optional(),
+	preferNewCredential: z.boolean().optional(),
 	credentialTestResult: z
 		.object({
 			success: z.boolean(),
@@ -660,6 +695,12 @@ export const confirmationRequestPayloadSchema = z.object({
 		.optional()
 		.describe('Target-agent tool approval details rendered instead of the outer tool call'),
 	credentialRequests: z.array(credentialRequestSchema).optional(),
+	requireUserSelection: z
+		.boolean()
+		.optional()
+		.describe(
+			'When true, the credential setup card must wait for an explicit user choice instead of automatically submitting a preselected existing credential',
+		),
 	projectId: z
 		.string()
 		.optional()
@@ -703,6 +744,11 @@ export const confirmationRequestPayloadSchema = z.object({
 		.optional()
 		.describe(
 			'Credential flow stage — finalize renders post-verification credential picker with different copy',
+		),
+	credentialDestination: credentialDestinationSchema
+		.optional()
+		.describe(
+			'Exact destination that must be approved before a workflow credential setup card opens',
 		),
 	setupRequests: z
 		.array(workflowSetupNodeSchema)
@@ -1333,9 +1379,23 @@ export class InstanceAiEventsQuery extends Z.class({
 	lastEventId: z.coerce.number().int().nonnegative().optional(),
 }) {}
 
+/** Ceilings for a single thread-history read: `limit` bounds the rows (and the
+ *  tree hydration hanging off them) one request can pull, `page` bounds the
+ *  offset scan behind it. Both sit above any real client — the UI's largest page
+ *  is 100 messages and it never pages past the first — so they only ever bite a
+ *  hand-crafted request. */
+export const INSTANCE_AI_THREAD_MESSAGES_DEFAULT_LIMIT = 50;
+export const INSTANCE_AI_THREAD_MESSAGES_MAX_LIMIT = 200;
+export const INSTANCE_AI_THREAD_MESSAGES_MAX_PAGE = 1000;
+
 export class InstanceAiThreadMessagesQuery extends Z.class({
-	limit: z.coerce.number().int().positive().default(50),
-	page: z.coerce.number().int().nonnegative().default(0),
+	limit: z.coerce
+		.number()
+		.int()
+		.min(1)
+		.max(INSTANCE_AI_THREAD_MESSAGES_MAX_LIMIT)
+		.default(INSTANCE_AI_THREAD_MESSAGES_DEFAULT_LIMIT),
+	page: z.coerce.number().int().nonnegative().max(INSTANCE_AI_THREAD_MESSAGES_MAX_PAGE).default(0),
 	raw: z.enum(['true', 'false']).optional(),
 }) {}
 
@@ -1347,34 +1407,10 @@ export interface InstanceAiSendMessageResponse {
 // Frontend store types (shared so both sides agree on structure)
 // ---------------------------------------------------------------------------
 
-export interface InstanceAiConfirmation {
-	requestId: string;
-	inputThreadId?: string;
-	severity: InstanceAiConfirmationSeverity;
-	message: string;
-	targetApproval?: InstanceAiTargetApproval;
-	credentialRequests?: InstanceAiCredentialRequest[];
-	projectId?: string;
-	inputType?: 'approval' | 'text' | 'questions' | 'plan-review' | 'resource-decision' | 'continue';
-	domainAccess?: DomainAccessMeta;
-	webSearch?: WebSearchMeta;
-	credentialFlow?: InstanceAiCredentialFlow;
-	setupRequests?: InstanceAiWorkflowSetupNode[];
-	workflowId?: string;
-	planItems?: PlannedTaskArg[];
-	questions?: Array<{
-		id: string;
-		question: string;
-		type: 'single' | 'multi' | 'text';
-		options?: string[];
-	}>;
-	introMessage?: string;
-	tasks?: TaskList;
-	resourceDecision?: GatewayConfirmationRequiredPayload;
-	channelConfig?: InstanceAiChannelConfig;
-	mcpConnectRequest?: InstanceAiMcpConnectRequest;
-	expired?: boolean;
-}
+export type InstanceAiConfirmation = Omit<
+	InstanceAiConfirmationRequestPayload,
+	'toolCallId' | 'toolName' | 'args'
+> & { expired?: boolean };
 
 export interface InstanceAiToolCallState {
 	toolCallId: string;
@@ -1937,7 +1973,12 @@ export type InstanceAiVerificationResponse =
 			startupMs?: number;
 			resultCount?: number;
 	  }
-	| { ok: false; failure: InstanceAiVerificationFailure };
+	| {
+			ok: false;
+			failure: InstanceAiVerificationFailure;
+			/** Sanitized underlying error message, safe to show to the user. */
+			error?: string;
+	  };
 
 // ---------------------------------------------------------------------------
 // User preferences — per-user, self-service
@@ -1995,6 +2036,24 @@ export interface InstanceAiMcpConnectionToolResponse {
 	name: string;
 	description?: string;
 }
+
+export type InstanceAiMcpConnectionFailureReason =
+	| 'server_unavailable'
+	| 'authentication'
+	| 'unknown';
+
+export type InstanceAiMcpConnectionToolsResponse =
+	| {
+			id: string;
+			status: 'connected';
+			tools: InstanceAiMcpConnectionToolResponse[];
+	  }
+	| {
+			id: string;
+			status: 'disconnected';
+			tools: InstanceAiMcpConnectionToolResponse[];
+			failureReason: InstanceAiMcpConnectionFailureReason;
+	  };
 
 export function getRenderHint(toolName: string): InstanceAiToolCallState['renderHint'] {
 	if (toolName === 'task-control') return 'tasks';

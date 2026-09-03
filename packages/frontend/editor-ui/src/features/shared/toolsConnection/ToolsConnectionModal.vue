@@ -19,6 +19,7 @@ import ToolDetailView from './ToolDetailView.vue';
 import ToolSettingsView from './ToolSettingsView.vue';
 import {
 	CATEGORY_BY_KIND,
+	hasToolConnection,
 	type FlattenedRow,
 	type ToolCategoryKey,
 	type ToolConnectionItem,
@@ -31,6 +32,8 @@ const props = withDefaults(
 		items: ToolConnectionItem[];
 		/** Tabs to render, in order. Declared categories show even while empty. */
 		categories: ToolCategoryKey[];
+		title?: string;
+		searchPlaceholder?: string;
 		detailItem?: ToolConnectionItem | null;
 		detailMode?: 'detail' | 'settings';
 		hideBackButton?: boolean;
@@ -62,6 +65,10 @@ const emit = defineEmits<{
 }>();
 
 const i18n = useI18n();
+const modalTitle = computed(() => props.title ?? i18n.baseText('tools.connection.title'));
+const searchPlaceholder = computed(
+	() => props.searchPlaceholder ?? i18n.baseText('tools.connection.search.placeholder'),
+);
 
 const ITEM_HEIGHT = 58;
 
@@ -132,9 +139,11 @@ function categoryOf(item: ToolConnectionItem): ToolCategoryKey {
 
 function itemsForCategory(category: ToolCategoryKey): ToolConnectionItem[] {
 	if (category === 'all') return props.items;
-	if (category === 'connected') return props.items.filter((item) => item.isConnected);
+	if (category === 'connected') return props.items.filter((item) => hasToolConnection(item.status));
 	return props.items.filter(
-		(item) => categoryOf(item) === category && (hasConnectedTab.value ? !item.isConnected : true),
+		(item) =>
+			categoryOf(item) === category &&
+			(hasConnectedTab.value ? !hasToolConnection(item.status) : true),
 	);
 }
 
@@ -259,9 +268,9 @@ function handleOpenChange(value: boolean) {
 	<N8nDialog
 		:open="open"
 		size="xlarge"
-		:header="detailItem ? '' : i18n.baseText('tools.connection.title')"
+		:header="detailItem ? '' : modalTitle"
 		:show-close-button="!detailItem"
-		:aria-label="i18n.baseText('tools.connection.title')"
+		:aria-label="modalTitle"
 		data-test-id="tools-connection-modal"
 		@update:open="handleOpenChange"
 	>
@@ -307,7 +316,7 @@ function handleOpenChange(value: boolean) {
 				<N8nInput
 					ref="searchInputRef"
 					v-model="searchQuery"
-					:placeholder="i18n.baseText('tools.connection.search.placeholder')"
+					:placeholder="searchPlaceholder"
 					clearable
 					data-test-id="tools-connection-search"
 					:class="$style.searchInput"
