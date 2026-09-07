@@ -2737,7 +2737,7 @@
 	"settings.communityNodes.viewDocsAction.label": "文档",
 	"settings.communityNodes.uninstallAction.label": "卸载包",
 	"settings.communityNodes.upToDate.tooltip": "您是最新版本",
-	"settings.communityNodes.failedToLoad.tooltip": "此包有问题，请尝试卸载它，然后重新安装以解决此问题",
+	"settings.communityNodes.failedToLoad.tooltip": "此包加载失败。它可能已损坏，或需要更新版本的 n8n。请尝试卸载并重新安装，或升级 n8n。",
 	"settings.communityNodes.fetchError.title": "获取已安装的包时出现问题",
 	"settings.communityNodes.fetchError.message": "您的互联网连接或 n8n 实例可能有问题",
 	"settings.communityNodes.installModal.title": "安装社区节点",
