@@ -5,6 +5,7 @@ import type { InstanceAiContext } from '../../../types';
 import {
 	buildCredentialMap,
 	buildCredentialResolutionNote,
+	isN8nCreditsWalletDepleted,
 	resolveCredentials,
 	type CredentialEntry,
 	type CredentialMap,
@@ -147,6 +148,67 @@ describe('resolveCredentials', () => {
 			expect(result.mockedNodeNames).toEqual(['Slack']);
 			expect(result.mockedCredentialsByNode).toEqual({});
 			expect(result.mockedCredentialTypes).toEqual([]);
+		});
+
+		it("honors the managed tag written as the credential id, ahead of the user's own stored credential", async () => {
+			// The builder copied the n8n credits entry's id (the managed tag) from the
+			// credentials list, exactly as it copies a stored credential id. Even though
+			// the user owns a Slack credential, the explicit tag must win and n8n credits
+			// must be attached — not the stored credential.
+			const json = makeWorkflow({
+				nodes: [
+					{
+						...makeSlackNode(),
+						credentials: { slackApi: { id: '__AI_GATEWAY_MANAGED__', name: 'n8n credits' } },
+					},
+				],
+			});
+			const ctx = createMockContext();
+			(ctx.credentialService.list as Mock).mockResolvedValue([]);
+			(
+				ctx.credentialService as unknown as { isAiGatewayCredentialType: Mock }
+			).isAiGatewayCredentialType = vi.fn().mockResolvedValue(true);
+
+			const ownCredentials = makeCredentialMap([
+				{ type: 'slackApi', id: 'own-slack-1', name: 'My Slack' },
+			]);
+
+			const result = await resolveCredentials(json, undefined, ctx, ownCredentials);
+
+			expect(json.nodes[0].credentials).toEqual({
+				slackApi: { id: null, name: 'Gateway credits', __aiGatewayManaged: true },
+			});
+			expect(result.resolvedCredentialsByNode).toEqual({
+				Slack: [{ type: 'slackApi', id: null, name: 'Gateway credits', __aiGatewayManaged: true }],
+			});
+			// n8n credits is connected — the own credential was not auto-attached over it.
+			expect(result.mockedCredentialsByNode).toEqual({});
+		});
+
+		it('does not attach an unusable managed credential when the tag is written for an unsupported type', async () => {
+			// The tag is written for a type the gateway can't serve and there's no
+			// supported sibling: don't persist an unusable n8n credits credential —
+			// fall through to normal resolution (here: mock / route to setup).
+			const json = makeWorkflow({
+				nodes: [
+					{
+						...makeSlackNode(),
+						credentials: { slackApi: { id: '__AI_GATEWAY_MANAGED__', name: 'n8n credits' } },
+					},
+				],
+			});
+			const ctx = createMockContext();
+			(ctx.credentialService.list as Mock).mockResolvedValue([]);
+			(
+				ctx.credentialService as unknown as { isAiGatewayCredentialType: Mock }
+			).isAiGatewayCredentialType = vi.fn().mockResolvedValue(false);
+
+			const result = await resolveCredentials(json, undefined, ctx, makeCredentialMap([]));
+
+			// Not attached as n8n credits; routed to setup instead.
+			expect(json.nodes[0].credentials).toEqual({});
+			expect(result.resolvedCredentialsByNode).toEqual({});
+			expect(result.mockedCredentialsByNode).toEqual({ Slack: ['slackApi'] });
 		});
 
 		it('switches the node auth to the attached n8n credits credential type', async () => {
@@ -1800,5 +1862,86 @@ describe('buildCredentialResolutionNote', () => {
 		expect(note).not.toContain('n8n Connect');
 		expect(note).not.toContain('n8n credits');
 		expect(note).toContain('switch to their own key');
+		expect(note).toContain('work out of the box');
+	});
+
+	it('replaces the out-of-the-box sentence when Gateway credits are depleted', () => {
+		const note = buildCredentialResolutionNote(
+			{
+				Firecrawl: [
+					{ type: 'firecrawlApi', id: null, name: 'Gateway credits', __aiGatewayManaged: true },
+				],
+			},
+			[],
+			{ n8nCreditsDepleted: true },
+		);
+
+		expect(note).toContain('Gateway credits are depleted');
+		expect(note).toContain('top up Gateway credits');
+		expect(note).toContain('own key');
+		expect(note).toContain('Do not offer a live test');
+		expect(note).not.toContain('work out of the box');
+		expect(note).not.toContain('n8n Connect');
+		expect(note).not.toContain('n8n credits');
+	});
+});
+
+describe('isN8nCreditsWalletDepleted', () => {
+	const n8nCreditsByNode = {
+		Firecrawl: [
+			{
+				type: 'firecrawlApi',
+				id: null,
+				name: 'Gateway credits',
+				__aiGatewayManaged: true as const,
+			},
+		],
+	};
+
+	it('is false when no Gateway credits were attached', async () => {
+		const getAiGatewayWallet = vi.fn();
+		const context = createMockContext();
+		context.credentialService.getAiGatewayWallet = getAiGatewayWallet;
+
+		await expect(
+			isN8nCreditsWalletDepleted(context, {
+				Slack: [{ type: 'slackApi', id: 'cred-1', name: 'My Slack' }],
+			}),
+		).resolves.toBe(false);
+		expect(getAiGatewayWallet).not.toHaveBeenCalled();
+	});
+
+	it('is false when getAiGatewayWallet is missing', async () => {
+		await expect(isN8nCreditsWalletDepleted(createMockContext(), n8nCreditsByNode)).resolves.toBe(
+			false,
+		);
+	});
+
+	it('is false when the wallet fetch returns null', async () => {
+		const context = createMockContext();
+		context.credentialService.getAiGatewayWallet = vi.fn().mockResolvedValue(null);
+
+		await expect(isN8nCreditsWalletDepleted(context, n8nCreditsByNode)).resolves.toBe(false);
+	});
+
+	it('is true when remaining credits are 0', async () => {
+		const context = createMockContext();
+		context.credentialService.getAiGatewayWallet = vi.fn().mockResolvedValue({ balance: 0 });
+
+		await expect(isN8nCreditsWalletDepleted(context, n8nCreditsByNode)).resolves.toBe(true);
+	});
+
+	it('is true when remaining credits are negative', async () => {
+		const context = createMockContext();
+		context.credentialService.getAiGatewayWallet = vi.fn().mockResolvedValue({ balance: -1 });
+
+		await expect(isN8nCreditsWalletDepleted(context, n8nCreditsByNode)).resolves.toBe(true);
+	});
+
+	it('is false when remaining credits are positive', async () => {
+		const context = createMockContext();
+		context.credentialService.getAiGatewayWallet = vi.fn().mockResolvedValue({ balance: 1 });
+
+		await expect(isN8nCreditsWalletDepleted(context, n8nCreditsByNode)).resolves.toBe(false);
 	});
 });

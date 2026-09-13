@@ -4,6 +4,7 @@ import { mock } from 'vitest-mock-extended';
 
 import type { ActivationErrorsService } from '@/activation-errors.service';
 import { BadRequestError } from '@/errors/response-errors/bad-request.error';
+import type { ProjectScopeService } from '@/permissions.ee/project-scope.service';
 import { ActiveWorkflowsService } from '@/services/active-workflows.service';
 import type { WorkflowFinderService } from '@/workflows/workflow-finder.service';
 import type { WorkflowSharingService } from '@/workflows/workflow-sharing.service';
@@ -14,6 +15,7 @@ describe('ActiveWorkflowsService', () => {
 	const workflowSharingService = mock<WorkflowSharingService>();
 	const workflowFinderService = mock<WorkflowFinderService>();
 	const activationErrorsService = mock<ActivationErrorsService>();
+	const projectScopeService = mock<ProjectScopeService>();
 	const service = new ActiveWorkflowsService(
 		mock(),
 		workflowRepository,
@@ -41,8 +43,9 @@ describe('ActiveWorkflowsService', () => {
 			workflowRepository.getActiveIds.mockResolvedValue(activeIds);
 		});
 
-		it('should return all workflow ids when user has full access', async () => {
+		it('should return all workflow ids when the user can list workflows globally', async () => {
 			user.role = GLOBAL_ADMIN_ROLE;
+			projectScopeService.getProjectRoleSlugs.mockResolvedValue(null);
 			const ids = await service.getAllActiveIdsFor(user);
 
 			expect(ids).toEqual(['2', '3', '4']);

@@ -1,5 +1,6 @@
 import type { SourceControlledFile } from '@n8n/api-types';
 import type { Logger } from '@n8n/backend-common';
+import type { PolicyViolation } from '@n8n/decorators';
 import {
 	type Variables,
 	type VariablesRepository,
@@ -41,6 +42,7 @@ import type { DataTableDDLService } from '@/modules/data-table/data-table-ddl.se
 import type { DataTableSizeValidator } from '@/modules/data-table/data-table-size-validator.service';
 import type { DataTableRepository } from '@/modules/data-table/data-table.repository';
 import type { RedactionEnforcementService } from '@/modules/redaction/redaction-enforcement.service';
+import type { PolicyEnforcementService } from '@/policy/policy-enforcement.service';
 import type { WorkflowHistoryService } from '@/workflows/workflow-history/workflow-history.service';
 import type { WorkflowMutationHooksProxy } from '@/workflows/workflow-mutation-hooks-proxy.service';
 import type { WorkflowPublishGuardProxy } from '@/workflows/workflow-publish-guard-proxy.service';
@@ -82,6 +84,9 @@ describe('SourceControlImportService', () => {
 	const dataTableColumnRepository = mock<DataTableColumnRepository>();
 	const dataTableDDLService = mock<DataTableDDLService>();
 	const redactionEnforcementService = mock<RedactionEnforcementService>();
+	const policyEnforcementService = mock<PolicyEnforcementService>();
+	policyEnforcementService.hasChecksFor.mockReturnValue(true);
+	policyEnforcementService.evaluateContentImport.mockResolvedValue({ violations: [] });
 	const dataTableSizeValidator = mock<DataTableSizeValidator>();
 	const activeWorkflowManager = mock<ActiveWorkflowManager>();
 	const executionPersistence = mock<ExecutionPersistence>();
@@ -125,6 +130,7 @@ describe('SourceControlImportService', () => {
 		dataTableColumnRepository,
 		dataTableDDLService,
 		redactionEnforcementService,
+		policyEnforcementService,
 		dataTableSizeValidator,
 		activeWorkflowManager,
 		executionPersistence,
@@ -1649,6 +1655,120 @@ describe('SourceControlImportService', () => {
 
 				await service.importWorkflowFromWorkFolder(candidates, mockUserId);
 
+				expect(workflowRepository.upsert).toHaveBeenCalled();
+			});
+		});
+
+		describe('content-import policy enforcement', () => {
+			const mockUserId = 'user-id-123';
+			const mockWorkflowFile = '/mock/workflow1.json';
+			const mockWorkflowData = {
+				id: '1',
+				name: 'Workflow 1',
+				active: false,
+				nodes: [
+					{
+						id: 'node-1',
+						name: 'Node 1',
+						type: 'n8n-nodes-base.noOp',
+						typeVersion: 1,
+						position: [0, 0],
+						parameters: {},
+					},
+				],
+				connections: {},
+				versionId: 'v1',
+				parentFolderId: null,
+				nodeGroups: [],
+			};
+
+			beforeEach(() => {
+				projectRepository.getPersonalProjectForUserOrFail.mockResolvedValue(
+					Object.assign(new Project(), {
+						id: 'personal-project-id-123',
+						name: 'Personal Project',
+						type: 'personal',
+						createdAt: new Date(),
+						updatedAt: new Date(),
+					}),
+				);
+				workflowRepository.findByIds.mockResolvedValue([]);
+				folderRepository.find.mockResolvedValue([]);
+				sharedWorkflowRepository.findWithFields.mockResolvedValue([]);
+				workflowRepository.upsert.mockResolvedValue({
+					identifiers: [{ id: '1' }],
+					generatedMaps: [],
+					raw: [],
+				});
+				fsReadFile.mockResolvedValueOnce(JSON.stringify(mockWorkflowData));
+			});
+
+			it('evaluates content-import policy for the imported workflow, against the resolved target project', async () => {
+				const candidates = [mock<SourceControlledFile>({ file: mockWorkflowFile, id: '1' })];
+
+				await service.importWorkflowFromWorkFolder(candidates, mockUserId);
+
+				expect(policyEnforcementService.evaluateContentImport).toHaveBeenCalledWith({
+					workflow: {
+						id: mockWorkflowData.id,
+						name: mockWorkflowData.name,
+						nodes: mockWorkflowData.nodes,
+					},
+					projectId: 'personal-project-id-123',
+				});
+			});
+
+			it('attaches violations to the pull result without failing the import', async () => {
+				const violation: PolicyViolation = {
+					kind: 'node-type-unavailable',
+					checkId: 'test.check',
+					message: 'not allowed',
+				};
+				policyEnforcementService.evaluateContentImport.mockResolvedValueOnce({
+					violations: [violation],
+				});
+				const candidates = [mock<SourceControlledFile>({ file: mockWorkflowFile, id: '1' })];
+
+				const result = await service.importWorkflowFromWorkFolder(candidates, mockUserId);
+
+				expect(result).toEqual([
+					expect.objectContaining({
+						id: '1',
+						contentImportPolicy: { violations: [violation], checkErrors: [] },
+					}),
+				]);
+				expect(workflowRepository.upsert).toHaveBeenCalled();
+			});
+
+			it('does not fail the pull when evaluateContentImport throws', async () => {
+				policyEnforcementService.evaluateContentImport.mockRejectedValueOnce(
+					new Error('backend unavailable'),
+				);
+				const candidates = [mock<SourceControlledFile>({ file: mockWorkflowFile, id: '1' })];
+
+				const result = await service.importWorkflowFromWorkFolder(candidates, mockUserId);
+
+				expect(result).toEqual([{ id: '1', name: mockWorkflowFile }]);
+				expect(result[0]).not.toHaveProperty('contentImportPolicy');
+				expect(workflowRepository.upsert).toHaveBeenCalled();
+			});
+
+			it('attaches a failed check to the pull result alongside violations', async () => {
+				const checkFailure = { checkId: 'test.check', correlationId: 'corr-1' };
+				policyEnforcementService.evaluateContentImport.mockResolvedValueOnce({
+					violations: [],
+					checkErrors: [checkFailure],
+				});
+				const candidates = [mock<SourceControlledFile>({ file: mockWorkflowFile, id: '1' })];
+
+				const result = await service.importWorkflowFromWorkFolder(candidates, mockUserId);
+
+				expect(result).toEqual([
+					expect.objectContaining({
+						id: '1',
+						contentImportPolicy: { violations: [], checkErrors: [checkFailure] },
+					}),
+				]);
 				expect(workflowRepository.upsert).toHaveBeenCalled();
 			});
 		});
@@ -3844,6 +3964,10 @@ describe('SourceControlImportService', () => {
 		});
 
 		describe('getLocalDataTablesFromDb', () => {
+			beforeEach(() => {
+				projectRelationRepository.findPersonalOwnerEmails.mockResolvedValue(new Map());
+			});
+
 			it('should return data tables from database', async () => {
 				// Arrange
 				const mockDataTables = [
@@ -3884,14 +4008,61 @@ describe('SourceControlImportService', () => {
 					updatedAt: '2024-01-02T00:00:00.000Z',
 				});
 				expect(dataTableRepository.find).toHaveBeenCalledWith({
-					relations: [
-						'columns',
-						'project',
-						'project.projectRelations',
-						'project.projectRelations.role',
-					],
+					relations: ['columns', 'project'],
 					where: {},
 				});
+			});
+
+			const dataTableIn = (id: string, project: { id: string; name: string; type: string }) => ({
+				id,
+				name: `Table ${id}`,
+				projectId: project.id,
+				columns: [],
+				createdAt: new Date('2024-01-01'),
+				updatedAt: new Date('2024-01-02'),
+				project,
+			});
+			const teamProject = { id: 'team1', name: 'Team Project 1', type: 'team' };
+			const personalProject = { id: 'personal1', name: 'Personal Project', type: 'personal' };
+
+			it('should resolve the owner of a personal project from the owner email lookup', async () => {
+				dataTableRepository.find.mockResolvedValue([dataTableIn('dt1', personalProject)] as never);
+				projectRelationRepository.findPersonalOwnerEmails.mockResolvedValue(
+					new Map([['personal1', 'owner@example.com']]),
+				);
+
+				const result = await service.getLocalDataTablesFromDb(globalAdminContext);
+
+				expect(result[0].ownedBy).toEqual({
+					type: 'personal',
+					projectId: 'personal1',
+					projectName: 'Personal Project',
+				});
+			});
+
+			it('should report no owner for a personal project without an owner relation', async () => {
+				dataTableRepository.find.mockResolvedValue([dataTableIn('dt1', personalProject)] as never);
+
+				const result = await service.getLocalDataTablesFromDb(globalAdminContext);
+
+				expect(result[0].ownedBy).toBeNull();
+			});
+
+			it('should look up owner emails only for personal projects', async () => {
+				const otherPersonalProject = { id: 'personal2', name: 'Other Personal', type: 'personal' };
+				dataTableRepository.find.mockResolvedValue([
+					dataTableIn('dt1', teamProject),
+					dataTableIn('dt2', personalProject),
+					dataTableIn('dt3', otherPersonalProject),
+				] as never);
+
+				await service.getLocalDataTablesFromDb(globalAdminContext);
+
+				expect(projectRelationRepository.findPersonalOwnerEmails).toHaveBeenCalledTimes(1);
+				expect(projectRelationRepository.findPersonalOwnerEmails).toHaveBeenCalledWith([
+					'personal1',
+					'personal2',
+				]);
 			});
 
 			it('should scope database query to data tables in authorized projects', async () => {
@@ -3911,12 +4082,7 @@ describe('SourceControlImportService', () => {
 					sourceControlScopedService.getDataTablesInAdminProjectsFromContextFilter,
 				).toHaveBeenCalledWith(globalMemberContext);
 				expect(dataTableRepository.find).toHaveBeenCalledWith({
-					relations: [
-						'columns',
-						'project',
-						'project.projectRelations',
-						'project.projectRelations.role',
-					],
+					relations: ['columns', 'project'],
 					where,
 				});
 			});

@@ -25,7 +25,7 @@ import {
 	WorkflowTagMappingRepository,
 } from '@n8n/db';
 import { Service } from '@n8n/di';
-import { PROJECT_ADMIN_ROLE_SLUG, PROJECT_OWNER_ROLE_SLUG } from '@n8n/permissions';
+import { PROJECT_ADMIN_ROLE_SLUG } from '@n8n/permissions';
 import { In, type DataSourceOptions, type EntityManager } from '@n8n/typeorm';
 import { QueryDeepPartialEntity } from '@n8n/typeorm/query-builder/QueryPartialEntity';
 import glob from 'fast-glob';
@@ -50,6 +50,8 @@ import { DataTable } from '@/modules/data-table/data-table.entity';
 import { DataTableRepository } from '@/modules/data-table/data-table.repository';
 import { isValidColumnName, isValidDataTableId } from '@/modules/data-table/utils/sql-utils';
 import { RedactionEnforcementService } from '@/modules/redaction/redaction-enforcement.service';
+import { evaluateContentImportSafely } from '@/policy/evaluate-content-import-safely';
+import { PolicyEnforcementService } from '@/policy/policy-enforcement.service';
 import { isUniqueConstraintError } from '@/response-helper';
 import { TagService } from '@/services/tag.service';
 import { assertNever } from '@/utils';
@@ -150,6 +152,7 @@ export class SourceControlImportService {
 		private readonly dataTableColumnRepository: DataTableColumnRepository,
 		private readonly dataTableDDLService: DataTableDDLService,
 		private readonly redactionEnforcementService: RedactionEnforcementService,
+		private readonly policyEnforcementService: PolicyEnforcementService,
 		private readonly dataTableSizeValidator: DataTableSizeValidator,
 		private readonly activeWorkflowManager: ActiveWorkflowManager,
 		private readonly executionPersistence: ExecutionPersistence,
@@ -519,22 +522,17 @@ export class SourceControlImportService {
 	): Promise<StatusExportableDataTable[]> {
 		try {
 			const dataTables = await this.dataTableRepository.find({
-				relations: [
-					'columns',
-					'project',
-					'project.projectRelations',
-					'project.projectRelations.role',
-				],
+				relations: ['columns', 'project'],
 				where:
 					this.sourceControlScopedService.getDataTablesInAdminProjectsFromContextFilter(context),
 			});
+			const ownerEmails = await this.projectRelationRepository.findPersonalOwnerEmails(
+				dataTables.flatMap((table) => (table.project?.type === 'personal' ? table.project.id : [])),
+			);
 			return dataTables.map((table) => {
 				let ownedBy: StatusResourceOwner | null = null;
 				if (table.project?.type === 'personal') {
-					const ownerRelation = table.project.projectRelations?.find(
-						(pr) => pr.role.slug === PROJECT_OWNER_ROLE_SLUG,
-					);
-					if (ownerRelation) {
+					if (ownerEmails.has(table.project.id)) {
 						ownedBy = {
 							type: 'personal',
 							projectId: table.project.id,
@@ -896,13 +894,20 @@ export class SourceControlImportService {
 			(w) => w.workflowId === id && w.role === 'workflow:owner',
 		);
 
-		await this.syncResourceOwnership({
+		const targetOwnerProject = await this.syncResourceOwnership({
 			resourceId: id,
 			remoteOwner: owner,
 			localOwner,
 			fallbackProject: personalProject,
 			repository: this.sharedWorkflowRepository,
 		});
+
+		// Advisory only — never blocks the pull, per contentImport being `evaluate`, not `enforce`.
+		const contentImportPolicy = await evaluateContentImportSafely(
+			this.policyEnforcementService,
+			{ workflow: { id, name: importedWorkflow.name, nodes }, projectId: targetOwnerProject.id },
+			this.logger,
+		);
 
 		// Now publish the workflow if needed (after history is saved)
 		if (shouldPublishAfterImport) {
@@ -919,6 +924,9 @@ export class SourceControlImportService {
 			publishingError: finalPublishingError,
 			...(finalPublishingErrorDetails && {
 				publishingErrorDetails: finalPublishingErrorDetails,
+			}),
+			...((contentImportPolicy.violations.length || contentImportPolicy.checkErrors.length) && {
+				contentImportPolicy,
 			}),
 		};
 	}
@@ -1953,7 +1961,7 @@ export class SourceControlImportService {
 		repository: SharedWorkflowRepository | SharedCredentialsRepository;
 		transactionManager?: EntityManager;
 		targetOwnerProject?: Project;
-	}): Promise<void> {
+	}): Promise<Project> {
 		targetOwnerProject ??= await this.resolveTargetOwnerProject(remoteOwner, fallbackProject);
 
 		const trx = transactionManager ?? this.workflowRepository.manager;
@@ -1966,6 +1974,8 @@ export class SourceControlImportService {
 
 		// Set new ownership
 		await repository.makeOwner([resourceId], targetOwnerProject.id, trx);
+
+		return targetOwnerProject;
 	}
 
 	private async resolveTargetOwnerProject(

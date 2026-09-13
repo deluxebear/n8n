@@ -152,7 +152,17 @@ export class ScalingService {
 			errorStack: error.stack ?? '',
 		};
 
-		await job.progress(msg);
+		try {
+			await job.progress(msg);
+		} catch (progressError) {
+			// e.g. the job key was already deleted by a stall sweep - do not let
+			// this secondary error mask the original one from being reported below
+			this.logger.warn(`Failed to notify main of failed execution ${executionId} (job ${job.id})`, {
+				error: progressError,
+				executionId,
+				jobId: job.id,
+			});
+		}
 
 		this.errorReporter.error(error, { executionId });
 
@@ -186,8 +196,11 @@ export class ScalingService {
 
 		while (this.getRunningJobsCount() !== 0) {
 			if (count++ % 4 === 0) {
+				const summaries = this.jobProcessor.getRunningJobsSummary();
+				const executionIds = summaries.map((summary) => summary.executionId);
 				this.logger.info(
-					`Waiting for ${this.getRunningJobsCount()} active executions to finish...`,
+					`Waiting for ${executionIds.length} active executions to finish... (execution IDs: ${executionIds.join(', ')})`,
+					{ executionIds },
 				);
 			}
 
