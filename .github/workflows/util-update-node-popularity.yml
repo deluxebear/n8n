@@ -3,13 +3,16 @@ name: 'Util: Update Node Popularity'
 on:
   workflow_dispatch:
 
-permissions:
-  contents: write
-  pull-requests: write
+permissions: {}
 
 jobs:
   update-popularity:
-    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: write
+      pull-requests: write
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'schedule' && github.repository == 'n8n-io/n8n')
     runs-on: ubuntu-latest
     outputs:
       pull-request-number: ${{ steps.create-pr.outputs.pull-request-number }}
@@ -74,6 +77,9 @@ jobs:
           committer: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>
 
   approve-and-automerge:
+    permissions:
+      contents: write
+      pull-requests: write
     needs: [update-popularity]
     if: |
       needs.update-popularity.outputs.pull-request-number != '' &&

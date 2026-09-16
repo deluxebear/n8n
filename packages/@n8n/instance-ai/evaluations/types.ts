@@ -7,6 +7,7 @@ import type {
 	InstanceAiEvalExecutionResult,
 	InstanceAiEvalSeedDataTable,
 	InstanceAiRunDebugResponse,
+	InstanceAiPromptConfiguration,
 } from '@n8n/api-types';
 
 import type { CheckOutcome } from './binaryChecks/types';
@@ -161,6 +162,7 @@ export interface EventOutcome {
 }
 
 export interface BuildTrace {
+	promptConfiguration?: InstanceAiPromptConfiguration;
 	finalText: string;
 	toolCalls: CapturedToolCall[];
 	agentActivities: AgentActivity[];
@@ -249,6 +251,11 @@ export interface WorkflowTestCase {
 	executionScenarios?: ExecutionScenario[];
 	/** Max follow-up messages the proxy will send. Ignored in auto-approve mode. */
 	messageBudget?: number;
+	/** Optional case override. Unset cases use the suite mode or control. */
+	buildMode?: 'progressive' | 'default';
+	promptVersion?: string;
+	/** Enable the user-run action for credential-free execution cases. */
+	allowUserExecution?: boolean;
 	/** Optional NL assertions about the build CONVERSATION (process: clarifications, push-back,
 	 *  ordering). LLM-judged from the transcript; requires a transcript, so skipped in
 	 *  prebuilt/MCP runs. Counted toward the per-case + headline pass rate alongside scenarios. */
@@ -309,6 +316,26 @@ export interface ExecutionScenarioResult {
 	 *  workflow failure). Rendered visibly but kept out of the pass-rate count,
 	 *  mirroring `BuildExpectationResult.incomplete`. */
 	incomplete?: boolean;
+}
+
+/**
+ * A seeded workflow to run BEFORE the graded turn.
+ *
+ * Creates a real execution record in the instance, so a case can ask about "the last
+ * run" and the honest answer requires the agent to go and read it. Without this,
+ * execution history is unreachable as a premise: the harness only ever executes a
+ * workflow *after* a build.
+ */
+export interface SeedPriorRun {
+	/** Seeded workflow to run, by the `id` the seed declares — the same key
+	 *  `conversation[0].attach.workflow` uses. */
+	workflow: string;
+	/**
+	 * Steers the mock layer, exactly as `executionScenarios[].dataSetup` does. This is
+	 * how a prior run is made to fail in a specific way, which is the interesting case:
+	 * the user reports "it broke again" and the agent has to find out how.
+	 */
+	hints?: string;
 }
 
 /** Verdict for one author-written build expectation. Scored as a unit in the
@@ -428,6 +455,7 @@ export interface PlanTask {
 export interface AskUserQuestion {
 	id: string;
 	question: string;
+	type?: 'single' | 'multi' | 'text';
 	options?: string[];
 }
 

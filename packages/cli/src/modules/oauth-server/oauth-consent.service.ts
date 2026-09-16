@@ -128,6 +128,11 @@ export class OAuthConsentService {
 			}
 
 			const defaultResource = this.protectedResourceRegistry.getDefaultResource();
+
+			if (defaultResource && !(await defaultResource.authorize(user))) {
+				return { ok: false, reason: 'forbidden' };
+			}
+
 			const scopes = this.grantableScopes(
 				defaultResource?.scopes ?? [],
 				sessionPayload.requestedScopes,
@@ -224,19 +229,36 @@ export class OAuthConsentService {
 				throw new UserError('Resource is not available for the requested authorization');
 			}
 
-			if (!(await resource.authorize(user))) {
-				this.logger.warn('User is not authorized for the requested resource', {
-					clientId: sessionPayload.clientId,
-					userId: user.id,
-					resourceUrl: sessionPayload.resource,
-				});
-				throw new ForbiddenError('User is not authorized for the requested resource');
+			await this.assertAuthorized(resource, user, sessionPayload.clientId);
+		} else {
+			// A pre-RFC-8707 client gets the default resource's audience, so the grant
+			// must clear that resource's gate too.
+			const defaultResource = this.protectedResourceRegistry.getDefaultResource();
+
+			if (defaultResource) {
+				await this.assertAuthorized(defaultResource, user, sessionPayload.clientId);
 			}
 		}
 
 		const grantedScopes = await this.resolveGrantedScopes(sessionPayload, scopes);
 
 		return await this.issueGrant(user, sessionPayload, grantedScopes);
+	}
+
+	private async assertAuthorized(
+		resource: ProtectedResource,
+		user: User,
+		clientId: string,
+	): Promise<void> {
+		if (await resource.authorize(user)) return;
+
+		this.logger.warn('User is not authorized for the requested resource', {
+			clientId,
+			userId: user.id,
+			resourceUrl: resource.getResourceUrl(),
+		});
+
+		throw new ForbiddenError('User is not authorized for the requested resource');
 	}
 
 	private async issueGrant(

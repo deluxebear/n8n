@@ -48,7 +48,9 @@ const baseConnectionConfig: McpConnectionConfig = {
 
 const createTestEgressFilter = (): NodeEgressFilter => ({
 	validateUrl: vi.fn().mockResolvedValue(createResultOk(undefined)),
+	validateConnectionHost: vi.fn().mockReturnValue(createResultOk(undefined)),
 	createSecureLookup: vi.fn(),
+	validateRedirectSync: vi.fn(),
 });
 
 const egressHelpers = <T extends { helpers: unknown }>(): Partial<T> =>

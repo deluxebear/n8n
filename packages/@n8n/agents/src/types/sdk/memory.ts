@@ -9,6 +9,7 @@ import type {
 	ObservationLogReflectFn,
 	ObservationLogScope,
 } from './observation-log';
+import type { RuntimeSkillStateStore } from '../../skills/types';
 import type { JSONObject } from '../utils/json';
 
 /**
@@ -34,6 +35,8 @@ export interface Thread {
 }
 
 export interface BuiltMemory {
+	/** Retains active skills across separate runs, including compacted conversations. */
+	skillState?: RuntimeSkillStateStore;
 	// --- Thread management ---
 	getThread(threadId: string): Promise<Thread | null>;
 	saveThread(thread: Omit<Thread, 'createdAt' | 'updatedAt'>): Promise<Thread>;
@@ -289,8 +292,13 @@ export interface ObservationLogMemoryConfig {
 }
 
 export interface ObservationalMemoryConfig {
-	/** Estimated tokens in unobserved transcript required before the Observer runs. */
+	/** Estimated visible-window tokens at which the Observer is scheduled mid-run and post-turn. */
 	observerThresholdTokens?: number;
+	/**
+	 * Run the Observer at tool-loop boundaries inside a turn. Default `true`.
+	 * When `false`, the Observer runs only after the turn completes.
+	 */
+	midRunObservation?: boolean;
 	/** Estimated active observation-log tokens required before the Reflector runs. */
 	reflectorThresholdTokens?: number;
 	/** Maximum estimated tokens to render into the system prompt. */

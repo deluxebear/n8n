@@ -1165,6 +1165,8 @@ describe('CredentialsService', () => {
 				user: ownerUser,
 				credentialType: credential.type,
 				credentialId: credential.id,
+				credentialName: credential.name,
+				projectId: undefined,
 			});
 		});
 
@@ -1224,12 +1226,37 @@ describe('CredentialsService', () => {
 				user: ownerUser,
 				credentialType: credential.type,
 				credentialId: credential.id,
+				credentialName: credential.name,
+				projectId: 'project-1',
 			});
 			expect(eventService.emit).toHaveBeenCalledWith('private-credential-deleted', {
 				user: ownerUser,
 				credentialType: credential.type,
 				credentialId: credential.id,
 			});
+		});
+
+		it('deletes a non-resolvable credential even when resolving its project throws', async () => {
+			const credential = mock<CredentialsEntity>({
+				id: 'project-credential',
+				type: 'gmailOAuth2',
+				usageScope: 'project',
+				isResolvable: false,
+			});
+			credentialsFinderService.findCredentialForUser.mockResolvedValue(credential);
+			credentialsRepository.remove.mockResolvedValue(credential);
+			// Nothing but the activity entry needs the project here, so the delete goes ahead.
+			sharedCredentialsRepository.findCredentialOwningProject.mockRejectedValue(
+				new Error('db is gone'),
+			);
+
+			await expect(service.delete(ownerUser, credential.id)).resolves.not.toThrow();
+
+			expect(credentialsRepository.remove).toHaveBeenCalled();
+			expect(eventService.emit).toHaveBeenCalledWith(
+				'credentials-deleted',
+				expect.objectContaining({ projectId: undefined }),
+			);
 		});
 
 		it('should not emit "private-credential-deleted" when deleting a static credential', async () => {
@@ -1248,6 +1275,8 @@ describe('CredentialsService', () => {
 				user: ownerUser,
 				credentialType: credential.type,
 				credentialId: credential.id,
+				credentialName: credential.name,
+				projectId: undefined,
 			});
 			const emittedEventNames = eventService.emit.mock.calls.map((call) => call[0]);
 			expect(emittedEventNames).not.toContain('private-credential-deleted');
@@ -1684,6 +1713,104 @@ describe('CredentialsService', () => {
 				data: unredactedData,
 			});
 			expect(result).toEqual(testResult);
+		});
+
+		it('discards a caller-supplied homeProject and resolves the owning project from storage', async () => {
+			const storedCredential = mock<CredentialsEntity>({
+				id: 'credential-id',
+				name: 'Stored Credential',
+				type: 'githubApi',
+			});
+			const decryptedData = { accessToken: 'stored-token' } as ICredentialDataDecryptedObject;
+			const testResult = { status: 'OK', message: 'Credential tested successfully' } as const;
+			const owningProject = mock<Project>({
+				id: 'real-owning-project-id',
+				type: 'team',
+				name: 'Real Project',
+				icon: null,
+				createdAt: new Date('2024-01-01T00:00:00.000Z'),
+				updatedAt: new Date('2024-01-02T00:00:00.000Z'),
+			});
+
+			credentialsFinderService.findCredentialForUser.mockResolvedValue(storedCredential);
+			vi.spyOn(service, 'decrypt').mockResolvedValue(decryptedData);
+			vi.spyOn(service, 'replaceCredentialContentsForSharee').mockResolvedValue(undefined);
+			vi.spyOn(service, 'getCredentialTypeProperties').mockReturnValue([]);
+			vi.spyOn(service, 'unredact').mockReturnValue(decryptedData);
+			sharedCredentialsRepository.findCredentialOwningProject.mockResolvedValue(owningProject);
+			credentialsTester.testCredentials.mockResolvedValue(testResult);
+
+			const payload = {
+				id: storedCredential.id,
+				name: storedCredential.name,
+				type: storedCredential.type,
+				// A plain member naming a project they don't own
+				homeProject: {
+					id: 'some-other-project-id',
+					name: 'Some Other Project',
+					icon: null,
+					type: 'team' as const,
+					createdAt: '2024-01-01T00:00:00.000Z',
+					updatedAt: '2024-01-01T00:00:00.000Z',
+				},
+				data: decryptedData,
+			};
+
+			await service.testWithCredentials(memberUser, payload);
+
+			expect(sharedCredentialsRepository.findCredentialOwningProject).toHaveBeenCalledWith(
+				storedCredential.id,
+			);
+			expect(credentialsTester.testCredentials).toHaveBeenCalledWith(
+				memberUser.id,
+				payload.type,
+				expect.objectContaining({
+					homeProject: expect.objectContaining({ id: owningProject.id }),
+				}),
+			);
+		});
+
+		it('does not fall back to a caller-supplied homeProject when no owning project is found', async () => {
+			const storedCredential = mock<CredentialsEntity>({
+				id: 'credential-id',
+				name: 'Stored Credential',
+				type: 'githubApi',
+			});
+			const decryptedData = { accessToken: 'stored-token' } as ICredentialDataDecryptedObject;
+			const testResult = { status: 'OK', message: 'Credential tested successfully' } as const;
+
+			credentialsFinderService.findCredentialForUser.mockResolvedValue(storedCredential);
+			vi.spyOn(service, 'decrypt').mockResolvedValue(decryptedData);
+			vi.spyOn(service, 'replaceCredentialContentsForSharee').mockResolvedValue(undefined);
+			vi.spyOn(service, 'getCredentialTypeProperties').mockReturnValue([]);
+			vi.spyOn(service, 'unredact').mockReturnValue(decryptedData);
+			sharedCredentialsRepository.findCredentialOwningProject.mockResolvedValue(undefined);
+			credentialsTester.testCredentials.mockResolvedValue(testResult);
+
+			const payload = {
+				id: 'credential-id',
+				name: 'Stored Credential',
+				type: 'githubApi',
+				// A plain member naming a project unrelated to the credential's
+				// (unresolvable) owning project.
+				homeProject: {
+					id: 'attacker-chosen-project-id',
+					name: 'Attacker Project',
+					icon: null,
+					type: 'team' as const,
+					createdAt: '2024-01-01T00:00:00.000Z',
+					updatedAt: '2024-01-01T00:00:00.000Z',
+				},
+				data: { accessToken: 'live-token' },
+			};
+
+			await service.testWithCredentials(memberUser, payload);
+
+			expect(credentialsTester.testCredentials).toHaveBeenCalledWith(
+				memberUser.id,
+				payload.type,
+				expect.objectContaining({ homeProject: undefined }),
+			);
 		});
 	});
 

@@ -56,6 +56,7 @@ export {
 	getNodeProxyAgent,
 	proxyFetch,
 	type AgentTimeoutOptions,
+	type EgressFilter,
 	type ProxyFetchOptions,
 } from './utils/http-proxy-agent';
 export { braveSearch, searxngSearch, type BraveSearchOptions } from './web-search';
@@ -64,6 +65,10 @@ export {
 	fetchFollowingRedirects,
 	type FollowRedirectsOptions,
 } from './utils/follow-redirects';
+export {
+	createRefreshingAuthFetch,
+	type RefreshingAuthFetchOptions,
+} from './utils/refreshing-auth-fetch';
 export {
 	getConnectionHintNoticeField,
 	metadataFilterField,

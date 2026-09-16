@@ -317,6 +317,91 @@ describe('createThreadRuntime - SSE and hydration', () => {
 		expect(activeRuntime(registry).activeRunId).toBe('run-1');
 	});
 
+	test('setup-items SSE events fold last-wins per workflowId', () => {
+		capturedOnMessage!(makeSSEEvent(validRunStartEvent('run-1', 'agent-root')));
+		capturedOnMessage!(
+			makeSSEEvent({
+				type: 'setup-items',
+				runId: 'run-1',
+				agentId: 'agent-root',
+				payload: {
+					workflowId: 'wf-1',
+					items: [
+						{
+							id: 'wf-1:credential:slackApi',
+							kind: 'credential',
+							credentialType: 'slackApi',
+						},
+					],
+				},
+			}),
+		);
+		capturedOnMessage!(
+			makeSSEEvent({
+				type: 'setup-items',
+				runId: 'run-1',
+				agentId: 'agent-root',
+				payload: {
+					workflowId: 'wf-1',
+					items: [
+						{
+							id: 'wf-1:credential:notionApi',
+							kind: 'credential',
+							credentialType: 'notionApi',
+						},
+					],
+				},
+			}),
+		);
+
+		const items = activeRuntime(registry).setupItemsByWorkflowId['wf-1'];
+		expect(items).toHaveLength(1);
+		expect(items[0]).toMatchObject({ credentialType: 'notionApi' });
+	});
+
+	test('setup-items snapshots survive thread restore (GET /messages)', async () => {
+		mockFetchThreadMessages.mockResolvedValueOnce({
+			threadId: 'thread-restore',
+			messages: [
+				{
+					id: 'msg-1',
+					runId: 'run-1',
+					role: 'assistant',
+					createdAt: new Date().toISOString(),
+					content: '',
+					reasoning: '',
+					isStreaming: false,
+					agentTree: {
+						agentId: 'agent-root',
+						role: 'orchestrator',
+						status: 'completed',
+						textContent: '',
+						reasoning: '',
+						toolCalls: [],
+						children: [],
+						timeline: [],
+						setupItemsByWorkflowId: {
+							'wf-1': [
+								{
+									id: 'wf-1:credential:slackApi',
+									kind: 'credential',
+									credentialType: 'slackApi',
+								},
+							],
+						},
+					},
+				},
+			],
+			nextEventId: 10,
+		});
+
+		const runtime = registry.getOrCreateRuntime('thread-restore');
+		await runtime.loadHistoricalMessages();
+
+		expect(runtime.setupItemsByWorkflowId['wf-1']).toHaveLength(1);
+		expect(runtime.setupItemsByWorkflowId['wf-1'][0]).toMatchObject({ credentialType: 'slackApi' });
+	});
+
 	test('background-group run-sync does not overwrite activeRunId from orchestrator sync', () => {
 		// First, create two assistant messages via normal events
 		capturedOnMessage!(
@@ -1717,6 +1802,64 @@ describe('createThreadRuntime - inline MCP connect confirmation', () => {
 	});
 });
 
+describe('createThreadRuntime - setup confirmation gating', () => {
+	let registry: RuntimeRegistry;
+
+	beforeEach(() => {
+		setupRuntimePinia();
+		registry = createRuntimeRegistry();
+		activeThreadId = 'thread-setup-panel';
+	});
+
+	function seedConfirmation(confirmation: Record<string, unknown>) {
+		const runtime = activeRuntime(registry);
+		runtime.messages = [
+			{
+				id: 'msg-1',
+				role: 'assistant',
+				runId: 'run-1',
+				content: '',
+				reasoning: '',
+				isStreaming: false,
+				createdAt: '2026-01-01T00:00:00.000Z',
+				agentTree: {
+					agentId: 'agent-root',
+					role: 'orchestrator',
+					status: 'active',
+					textContent: '',
+					reasoning: '',
+					toolCalls: [
+						{
+							toolCallId: 'tc-1',
+							toolName: 'setup-workflow',
+							args: {},
+							isLoading: true,
+							confirmation,
+						},
+					],
+					children: [],
+					timeline: [],
+				},
+			},
+		] as unknown as typeof runtime.messages;
+		return runtime;
+	}
+
+	// The BE suspends the run while a setup confirmation is pending (a send
+	// would 409), so setup kinds must gate the composer like any other kind.
+	it('keeps setup confirmations gating the composer', () => {
+		const runtime = seedConfirmation({
+			requestId: 'req-setup',
+			severity: 'info',
+			message: 'Connect Slack',
+			setupRequests: [{ workflowId: 'wf-1' }],
+		});
+
+		expect(runtime.pendingConfirmations).toHaveLength(1);
+		expect(runtime.isAwaitingConfirmation).toBe(true);
+	});
+});
+
 describe('createThreadRuntime - session always-allow', () => {
 	let registry: RuntimeRegistry;
 
@@ -1740,6 +1883,7 @@ describe('createThreadRuntime - session always-allow', () => {
 			args?: Record<string, unknown>;
 			severity?: 'info' | 'warning' | 'destructive';
 			channelConfig?: { integrationType: string; agentId: string };
+			credentialFlow?: { stage: 'generic' | 'finalize' };
 			targetApproval?: InstanceAiTargetApproval;
 			credentialDestination?: InstanceAiCredentialDestination;
 			workflowId?: string;
@@ -1772,6 +1916,7 @@ describe('createThreadRuntime - session always-allow', () => {
 							severity: opts.severity ?? 'info',
 							message: 'Approve?',
 							...(opts.channelConfig ? { channelConfig: opts.channelConfig } : {}),
+							...(opts.credentialFlow ? { credentialFlow: opts.credentialFlow } : {}),
 							...(opts.targetApproval ? { targetApproval: opts.targetApproval } : {}),
 							...(opts.credentialDestination
 								? { credentialDestination: opts.credentialDestination }
@@ -1802,6 +1947,23 @@ describe('createThreadRuntime - session always-allow', () => {
 			kind: 'approval',
 			approved: true,
 		});
+	});
+
+	it('does not auto-approve credential-flow confirmations even when the key matches', async () => {
+		const runtime = registry.getOrCreateRuntime(activeThreadId);
+		runtime.addAlwaysAllowKey('connect_credential', {});
+
+		pushPendingApproval(runtime, {
+			messageId: 'msg-cred-flow',
+			requestId: 'req-cred-flow',
+			toolName: 'connect_credential',
+			args: {},
+			credentialFlow: { stage: 'generic' },
+		});
+
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(runtime.resolvedConfirmationIds.has('req-cred-flow')).toBe(false);
+		expect(mockPostConfirmation).not.toHaveBeenCalled();
 	});
 
 	it('does not auto-approve channel-setup confirmations even when the key matches', async () => {
