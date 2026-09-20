@@ -1,4 +1,4 @@
-import { passthroughEgressFilter, OutboundHttp } from '@n8n/backend-network';
+import { OutboundHttp } from '@n8n/backend-network';
 import { Container } from '@n8n/di';
 import type {
 	IAllExecuteFunctions,
