@@ -7,7 +7,9 @@
 // ---------------------------------------------------------------------------
 
 import type {
+	InstanceAiHandoffContext,
 	InstanceAiSendMessageRequest,
+	AgentConfigResponse,
 	InstanceAiBuildMode,
 	InstanceAiConfirmRequest,
 	InstanceAiRichMessagesResponse,
@@ -309,6 +311,7 @@ export class N8nClient {
 		attachments?: InstanceAiWorkflowAttachment[],
 		mode: InstanceAiBuildMode = 'default',
 		promptVersion?: string,
+		handoffContext?: InstanceAiHandoffContext,
 	): Promise<{ runId: string }> {
 		const result = await this.fetch(`/rest/instance-ai/chat/${threadId}`, {
 			method: 'POST',
@@ -317,6 +320,7 @@ export class N8nClient {
 				...(attachments?.length ? { attachments } : {}),
 				mode,
 				...(promptVersion ? { promptVersion } : {}),
+				...(handoffContext ? { context: handoffContext } : {}),
 			} satisfies InstanceAiSendMessageRequest,
 		});
 		return this.unwrapRestData<{ runId: string }>(result);
@@ -546,8 +550,8 @@ export class N8nClient {
 	async getAgentConfig(projectId: string, agentId: string): Promise<AgentJsonConfig> {
 		const result = (await this.fetch(
 			`/rest/projects/${projectId}/agents/v2/${agentId}/config`,
-		)) as { data: AgentJsonConfig };
-		return result.data;
+		)) as { data: AgentConfigResponse };
+		return result.data.config;
 	}
 
 	/**

@@ -18,7 +18,7 @@ import { Z } from '../zod-class';
 export const UNLIMITED_CREDITS = -1;
 
 /**
- * The instance's AI Assistant credit standing, as reported by `GET /instance-ai/credits`, by the
+ * The instance's n8n Assistant credit standing, as reported by `GET /instance-ai/credits`, by the
  * `updateInstanceAiCredits` push and by the internal callers that pass it around.
  *
  * `creditsQuota` is {@link UNLIMITED_CREDITS} when credits are not metered — either the proxy is
@@ -1442,7 +1442,7 @@ export class InstanceAiCorrectTaskRequest extends Z.class({
  * - `playwright` — Playwright E2E helpers that create threads via the REST API
  * Experiment cleanup: remove with openWorkflowInAssistant.
  * - `workflow_list_auto` — treatment redirect: a workflow list card opened in the assistant by default
- * - `workflow_list_button` — deliberate "Edit with AI Assistant" button on a workflow list card
+ * - `workflow_list_button` — deliberate "Edit with n8n Assistant" button on a workflow list card
  */
 export const INSTANCE_AI_THREAD_SOURCES = [
 	'website-template',
@@ -1691,6 +1691,24 @@ export interface InstanceAiThreadListResponse {
 	threads: InstanceAiThreadInfo[];
 	total: number;
 	page: number;
+	hasMore: boolean;
+}
+
+export class InstanceAiThreadHistoryQuery extends Z.class({
+	limit: z.coerce.number().int().min(1).max(100).default(30),
+	// Postgres rejects NUL bytes in text parameters, so reject them here as a 400.
+	search: z
+		.string()
+		.trim()
+		.max(500)
+		.refine((value) => !value.includes('\u0000'))
+		.optional(),
+	cursor: z.string().min(1).max(256).optional(),
+}) {}
+
+export interface InstanceAiThreadHistoryResponse {
+	threads: InstanceAiThreadInfo[];
+	nextCursor: string | null;
 	hasMore: boolean;
 }
 
@@ -2017,7 +2035,7 @@ export interface InstanceAiSetupState {
 }
 
 /**
- * How each AI Assistant setup component is configured, derived from the admin
+ * How each n8n Assistant setup component is configured, derived from the admin
  * settings response. Single source of truth for the setup gate and the setup
  * telemetry snapshot, on both backend and frontend. The response already
  * resolves precedence (credential ids are null when env config wins), so env
@@ -2303,7 +2321,7 @@ export const INSTANCE_AI_MCP_CONNECTIONS_FLAG = '089_instance_ai_mcp_connections
 
 export const INSTANCE_AI_MCP_CONNECTIONS_ENABLED_VARIANT = 'variant';
 
-/** Enables adding selected canvas nodes as chat context in the AI Assistant */
+/** Enables adding selected canvas nodes as chat context in the n8n Assistant */
 export const CANVAS_NODE_CONTEXT_FLAG = '104_canvas_aia_node_context';
 
 /** Enables the conversation-history tool and the past-conversations first-turn hint */
@@ -2326,6 +2344,14 @@ export const INSTANCE_AI_NODE_USAGE_FLAG = '109_instance_ai_node_usage';
  * `N8N_INSTANCE_AI_FOLDER_EXPLORATION_ENABLED` force-enables.
  */
 export const INSTANCE_AI_FOLDER_EXPLORATION_FLAG = '110_instance_ai_folder_exploration';
+
+/**
+ * `110_instance_ai_folder_exploration` is multivariate — the enabled arm is a
+ * variant string, not a boolean. The flag names its on-arm `test` rather than
+ * the `variant` the other Instance AI experiments use, so this constant tracks
+ * the flag's own spelling.
+ */
+export const INSTANCE_AI_FOLDER_EXPLORATION_ENABLED_VARIANT = 'test';
 
 /**
  * Records a credential field that was rewritten (e.g. routed to the eval wire
@@ -2476,6 +2502,10 @@ const instanceAiEvalSeedWorkflowSchema = z.object({
 	name: z.string().min(1).max(255),
 	nodes: z.array(z.record(z.unknown())).max(500),
 	connections: z.record(z.unknown()),
+	/** Publish the workflow once restored, so a case starts from a live automation.
+	 *  Its node credentials must name credentials the thread's project holds, or
+	 *  activation refuses the workflow and the restore fails. */
+	published: z.boolean().optional(),
 });
 
 export type InstanceAiEvalSeedWorkflow = z.infer<typeof instanceAiEvalSeedWorkflowSchema>;
@@ -2569,7 +2599,8 @@ export class InstanceAiEvalRestoreThreadRequest extends Z.class({
 	messages: z.array(z.record(z.unknown())).max(1000),
 	/** Data tables the workflows reference; recreated first so ids can be rewritten. */
 	dataTables: z.array(instanceAiEvalSeedDataTableSchema).max(20).optional(),
-	/** Workflows the history references; recreated (node credentials stripped). */
+	/** Workflows the history references; recreated. A node credential is kept only
+	 *  when the thread's project holds one of the same type and name. */
 	workflows: z.array(instanceAiEvalSeedWorkflowSchema).max(50).optional(),
 	/** Agents the history references; created at their pinned id, with the thread
 	 *  bound to them so the next turn continues one instead of resolving it again. */

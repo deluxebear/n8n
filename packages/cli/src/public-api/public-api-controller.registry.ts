@@ -5,6 +5,8 @@ import type { AccessScope, ApiKeyScopeRequirement, Controller } from '@n8n/decor
 import { Container, Service } from '@n8n/di';
 import type { Request, RequestHandler, Response, Router } from 'express';
 import { Router as createRouter } from 'express';
+import { z } from 'zod';
+import type { ZodTypeAny } from 'zod';
 
 import { FeatureNotLicensedError } from '@/errors/feature-not-licensed.error';
 import { BadRequestError } from '@/errors/response-errors/bad-request.error';
@@ -14,7 +16,7 @@ import { userHasScopes } from '@/permissions.ee/check-access';
 import { assertJsonContentType } from '@/public-api/public-api-media-type';
 import {
 	apiKeyScopesSatisfy,
-	isDtoArg,
+	findBodyArg,
 	isRequestBodyRequired,
 	resolveRouteArgs,
 	resolveSuccessStatus,
@@ -24,6 +26,16 @@ import { deprecated } from '@/public-api/v1/shared/middlewares/global.middleware
 import { sendPublicApiErrorResponse } from '@/public-api/v1/public-api-error-response';
 import { AuthStrategyRegistry } from '@/services/auth-strategy.registry';
 import { LastActiveAtService } from '@/services/last-active-at.service';
+
+function parsePathParam(key: string, schema: ZodTypeAny, params: Request['params']): unknown {
+	const output = z.object({ [key]: schema }).safeParse(params);
+
+	if (!output.success) {
+		throw new BadRequestError(formatValidationError('params', output.error));
+	}
+
+	return output.data[key];
+}
 
 // Match the legacy version-less route. req.path drops the prefix, req.baseUrl adds /api/v1
 function routePath(prefix: string, req: Request): string {
@@ -68,8 +80,9 @@ export class PublicApiControllerRegistry {
 				route.successStatus,
 			);
 
-			const bodyDto = resolvedArgs.find((arg) => isDtoArg(arg, 'body'))?.dto;
-			const bodyRequired = bodyDto ? isRequestBodyRequired(bodyDto) : false;
+			const bodyArg = findBodyArg(resolvedArgs);
+			const bodyDto = bodyArg?.dto;
+			const bodyRequired = bodyDto ? (bodyArg?.required ?? isRequestBodyRequired(bodyDto)) : false;
 
 			const handler = async (req: Request, res: Response) => {
 				if (bodyDto) assertJsonContentType(req.headers['content-type'], bodyRequired);
@@ -77,7 +90,9 @@ export class PublicApiControllerRegistry {
 				const args: unknown[] = [req, res];
 				for (const arg of resolvedArgs) {
 					if (arg.type === 'param') {
-						args.push(req.params[arg.key]);
+						args.push(
+							arg.schema ? parsePathParam(arg.key, arg.schema, req.params) : req.params[arg.key],
+						);
 					} else {
 						const output = arg.dto.safeParse(req[arg.type]);
 						if (output.success) {
@@ -92,17 +107,14 @@ export class PublicApiControllerRegistry {
 
 				if (res.headersSent) return;
 
-				if (successStatus === 204) {
-					res.status(204).send();
+				if (successStatus === 204 || (!route.responseDto && result === undefined)) {
+					res.status(successStatus).send();
 					return;
 				}
 
-				if (route.responseDto) {
-					res.status(successStatus).json(route.responseDto.parse(result));
-					return;
-				}
-
-				res.status(successStatus).json(result);
+				res
+					.status(successStatus)
+					.json(route.responseDto ? route.responseDto.parse(result) : result);
 			};
 
 			const middlewares: RequestHandler[] = [];

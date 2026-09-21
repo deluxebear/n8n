@@ -3,7 +3,6 @@ import {
 	DEFAULT_EPISODIC_MEMORY_EMBEDDING_MODEL,
 	DEFAULT_EPISODIC_MEMORY_MAX_ENTRIES_PER_RUN,
 	DEFAULT_EPISODIC_MEMORY_TOP_K,
-	createEpisodicMemoryExtractFn,
 	createEpisodicMemoryReflectFn,
 } from '../runtime/memory/episodic-memory-defaults';
 import { InMemoryMemory } from '../runtime/memory/memory-store';
@@ -63,7 +62,6 @@ export function resolveEpisodicMemoryConfig(
 	options: ResolveMemoryConfigDefaultsOptions,
 ): EpisodicMemoryConfig {
 	const embeddingModel = config.embeddingModel ?? DEFAULT_EPISODIC_MEMORY_EMBEDDING_MODEL;
-	const extractorModel = options.defaultModel;
 	const reflectorModel = options.defaultModel;
 
 	return {
@@ -73,11 +71,6 @@ export function resolveEpisodicMemoryConfig(
 		embedder:
 			config.embedder ?? createEmbeddingModel(embeddingModel, config.embeddingProviderOptions),
 		embeddingModel,
-		extract:
-			config.extract ??
-			createEpisodicMemoryExtractFn(extractorModel, {
-				extractionPrompt: config.prompts?.extraction,
-			}),
 		reflect:
 			config.reflect ??
 			createEpisodicMemoryReflectFn(reflectorModel, {

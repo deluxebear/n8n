@@ -7,7 +7,6 @@ import type {
 } from 'n8n-workflow';
 import { toPathSegment, NodeApiError } from 'n8n-workflow';
 
-
 import type { ElasticsearchApiCredentials } from './types';
 
 export async function elasticsearchBulkApiRequest(this: IExecuteFunctions, body: IDataObject) {

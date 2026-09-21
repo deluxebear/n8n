@@ -6,6 +6,7 @@ import {
 	ControllerRegistryMetadata,
 	Deprecated,
 	Get,
+	Param,
 	Post,
 } from '@n8n/decorators';
 import type { Controller } from '@n8n/decorators';
@@ -140,6 +141,23 @@ describe('PublicApiControllerRegistry', () => {
 		);
 	});
 
+	describe('success response without a DTO', () => {
+		it('sends an empty body without a content-type when the handler returns nothing', async () => {
+			@Service()
+			class WidgetsPublicController {
+				@Post('/')
+				@ApiResponse(201)
+				create() {}
+			}
+			markPublicApiController(WidgetsPublicController as Controller, '/widgets');
+
+			const response = await request(activate()).post('/api/v1/widgets').expect(201);
+
+			expect(response.text).toBe('');
+			expect(response.headers['content-type']).toBeUndefined();
+		});
+	});
+
 	describe('validation failures', () => {
 		class WidgetValidationDto extends Z.class({
 			name: z.string(),
@@ -166,6 +184,58 @@ describe('PublicApiControllerRegistry', () => {
 		});
 	});
 
+	describe('path parameter validation', () => {
+		const widgetIdSchema = z.string().regex(/^(?!0+$)\d+$/, 'must be a positive integer');
+
+		function registerValidatedRoute() {
+			@Service()
+			class WidgetsPublicController {
+				@Get('/:widgetId')
+				@ApiResponse(200)
+				get(
+					_req: express.Request,
+					_res: express.Response,
+					@Param('widgetId', widgetIdSchema) widgetId: string,
+				) {
+					return { widgetId };
+				}
+			}
+			markPublicApiController(WidgetsPublicController as Controller, '/widgets');
+		}
+
+		it('rejects a value that fails its schema with a 400 naming the parameter', async () => {
+			registerValidatedRoute();
+
+			const response = await request(activate()).get('/api/v1/widgets/abc').expect(400);
+
+			expect(response.body.message).toBe('request/params/widgetId must be a positive integer');
+		});
+
+		it('hands a passing value to the handler as a string', async () => {
+			registerValidatedRoute();
+
+			const response = await request(activate()).get('/api/v1/widgets/12').expect(200);
+
+			expect(response.body).toEqual({ widgetId: '12' });
+		});
+
+		it('hands the raw value through when the @Param declares no schema', async () => {
+			@Service()
+			class WidgetsPublicController {
+				@Get('/:widgetId')
+				@ApiResponse(200)
+				get(_req: express.Request, _res: express.Response, @Param('widgetId') widgetId: string) {
+					return { widgetId };
+				}
+			}
+			markPublicApiController(WidgetsPublicController as Controller, '/widgets');
+
+			const response = await request(activate()).get('/api/v1/widgets/abc').expect(200);
+
+			expect(response.body).toEqual({ widgetId: 'abc' });
+		});
+	});
+
 	describe('request media type', () => {
 		function registerOptionalBodyRoute() {
 			@Service()
@@ -185,6 +255,22 @@ describe('PublicApiControllerRegistry', () => {
 				@Post('/')
 				@ApiResponse(200)
 				method(_req: unknown, _res: unknown, @Body body: WidgetBodyDto) {
+					return body;
+				}
+			}
+			markPublicApiController(WidgetsPublicController as Controller, '/widgets');
+		}
+
+		function registerRequiredOptionalBodyRoute() {
+			@Service()
+			class WidgetsPublicController {
+				@Post('/')
+				@ApiResponse(200)
+				method(
+					_req: unknown,
+					_res: unknown,
+					@Body({ required: true }) body: OptionalWidgetBodyDto,
+				) {
 					return body;
 				}
 			}
@@ -270,6 +356,27 @@ describe('PublicApiControllerRegistry', () => {
 			const response = await postWithContentType(header).expect(415);
 
 			expect(response.body.message).toBe('unsupported media type undefined');
+		});
+
+		it.each(namesNoMediaType)(
+			'rejects %s when @Body({ required: true }) overrides an otherwise-optional DTO',
+			async (_label, header) => {
+				registerRequiredOptionalBodyRoute();
+
+				const response = await postWithContentType(header).expect(415);
+
+				expect(response.body.message).toBe('unsupported media type undefined');
+			},
+		);
+
+		it('accepts application/json with an empty object when @Body({ required: true }) is set', async () => {
+			registerRequiredOptionalBodyRoute();
+
+			await request(activate())
+				.post('/api/v1/widgets')
+				.set('Content-Type', 'application/json')
+				.send({})
+				.expect(200);
 		});
 
 		it('accepts application/json carrying an unrelated parameter', async () => {

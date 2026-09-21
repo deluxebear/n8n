@@ -1,6 +1,6 @@
 {
   "name": "@n8n/backend-network",
-  "version": "1.13.5",
+  "version": "1.14.1",
   "scripts": {
     "clean": "rimraf dist .turbo",
     "dev": "pnpm watch",
@@ -80,7 +80,6 @@
     "n8n-workflow": "workspace:*",
     "proxy-from-env": "catalog:",
     "qs": "catalog:",
-    "reflect-metadata": "catalog:",
     "undici": "catalog:undici-v7",
     "zod": "catalog:"
   },

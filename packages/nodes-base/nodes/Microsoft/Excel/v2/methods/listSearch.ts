@@ -13,6 +13,26 @@ import { getExcelCredentialType, microsoftApiRequest } from '../transport';
 // listSearch context throughout this file: the transport's trailing `0` is its
 // fallback read (getNodeParameter's 2nd arg here is a fallback, not an item index).
 
+const WORKBOOK_EXTENSIONS = ['.xlsx', '.xlsm'];
+
+type DriveItem = {
+	id?: string;
+	name?: string;
+	webUrl?: string;
+	file?: IDataObject;
+};
+
+type DriveSearchResponse = {
+	value?: DriveItem[];
+	'@odata.nextLink'?: string;
+};
+
+function workbookExtension(item: DriveItem): string | undefined {
+	if (item.file === undefined) return undefined;
+	const name = (item.name ?? '').toLowerCase();
+	return WORKBOOK_EXTENSIONS.find((extension) => name.endsWith(extension));
+}
+
 export async function searchWorkbooks(
 	this: ILoadOptionsFunctions,
 	filter?: string,
@@ -30,64 +50,49 @@ export async function searchWorkbooks(
 		);
 	}
 	const trimmed = filter?.trim() ?? '';
-	const fileExtensions = ['.xlsx', '.xlsm'];
-	const q = trimmed === '' ? fileExtensions.join(' OR ') : trimmed;
+	const q = trimmed === '' ? WORKBOOK_EXTENSIONS.join(' OR ') : trimmed;
 	const encodedQuery = trimmed === '' ? q : encodeURIComponent(escapeODataValue(q));
 
-	let response: IDataObject;
-	if (paginationToken) {
-		response = await microsoftApiRequest.call(
-			this,
-			'GET',
-			'',
-			undefined,
-			undefined,
-			paginationToken,
-			undefined,
-			0,
-		);
-	} else {
-		response = await microsoftApiRequest.call(
-			this,
-			'GET',
-			`/drive/root/search(q='${encodedQuery}')`,
-			undefined,
-			{
-				select: 'id,name,webUrl,file',
-				$top: 100,
-			},
-			undefined,
-			undefined,
-			0,
-		);
-	}
-
-	if (response.value) {
-		response.value = (response.value as IDataObject[]).filter((workbook: IDataObject) => {
-			const name = workbook.name as string;
-			return (
-				workbook.file !== undefined &&
-				fileExtensions.some((extension) => name.toLowerCase().endsWith(extension))
+	const response: DriveSearchResponse = paginationToken
+		? await microsoftApiRequest.call(
+				this,
+				'GET',
+				'',
+				undefined,
+				undefined,
+				paginationToken, // paginationToken contains the full URL
+				undefined,
+				0,
+			)
+		: await microsoftApiRequest.call(
+				this,
+				'GET',
+				`/drive/root/search(q='${encodedQuery}')`,
+				undefined,
+				{
+					select: 'id,name,webUrl,file',
+					$top: 100,
+				},
+				undefined,
+				undefined,
+				0,
 			);
+
+	const results: INodeListSearchItems[] = [];
+	for (const item of response.value ?? []) {
+		const extension = workbookExtension(item);
+		if (extension === undefined) continue;
+		const name = item.name ?? '';
+		results.push({
+			name: name.slice(0, -extension.length),
+			value: item.id ?? '',
+			url: item.webUrl,
 		});
 	}
 
 	return {
-		results: ((response.value as IDataObject[] | undefined) ?? []).map((workbook: IDataObject) => {
-			let name = workbook.name as string;
-			for (const extension of fileExtensions) {
-				if (name.toLowerCase().endsWith(extension)) {
-					name = name.slice(0, -extension.length);
-					break;
-				}
-			}
-			return {
-				name,
-				value: workbook.id as string,
-				url: workbook.webUrl as string,
-			};
-		}),
-		paginationToken: response['@odata.nextLink'] as string | undefined,
+		results,
+		paginationToken: response['@odata.nextLink'],
 	};
 }
 

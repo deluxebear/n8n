@@ -9,7 +9,6 @@ import type {
 } from 'n8n-workflow';
 import { toPathSegment, NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
 
-
 import {
 	caseCommentFields,
 	caseCommentOperations,
