@@ -18,6 +18,11 @@ vi.mock('@n8n/instance-ai', async () => {
 		assertInstanceAiPromptVersion: profiles.assertInstanceAiPromptVersion,
 		describePromptProfile: profiles.describePromptProfile,
 		setTracePromptVersion: vi.fn(),
+		setTraceModelId: vi.fn(),
+		modelIdTraceMetadata: (modelId: unknown) =>
+			typeof modelId === 'string' && modelId.length > 0 ? { model_id: modelId } : {},
+		modelConfigId: (config: unknown) =>
+			typeof config === 'string' && config.length > 0 ? config : undefined,
 		// Wiring-only stub: the real mapping has its own unit tests
 		// (instance-ai/src/tracing/__tests__/thread-provenance.test.ts). What the
 		// service tests pin is that its OUTPUT reaches the trace — spreading an
@@ -254,6 +259,7 @@ import {
 	type BuilderUsageItem,
 	type ManagedBackgroundTask,
 	type InstanceAiTraceContext,
+	type ModelConfig,
 	type TraceStatus,
 	type WorkflowVerificationObligation,
 } from '@n8n/instance-ai';
@@ -288,6 +294,8 @@ type StartRunServiceInternals = {
 			}
 		>;
 		setTimeZone: MockedFunction<(threadId: string, timeZone: string) => void>;
+		setComputerUseChannels: Mock;
+		getComputerUseChannels: Mock;
 		setBuildMode: MockedFunction<(threadId: string, mode: string | undefined) => void>;
 		setPromptVersion: Mock;
 		activeRunCount: MockedFunction<() => number>;
@@ -313,6 +321,8 @@ function createStartRunService(): StartRunServiceInternals {
 			messageGroupId: 'group-1',
 		})),
 		setTimeZone: vi.fn(),
+		setComputerUseChannels: vi.fn(),
+		getComputerUseChannels: vi.fn(() => undefined),
 		setBuildMode: vi.fn(),
 		setPromptVersion: vi.fn(),
 		activeRunCount: vi.fn(() => 0),
@@ -575,6 +585,7 @@ type TerminalGuardOrderServiceInternals = {
 			messageGroupId?: string;
 			resumeTracing?: InstanceAiTraceContext;
 			unregisteredResumeTracing?: InstanceAiTraceContext;
+			modelId?: ModelConfig;
 		},
 	) => Promise<void>;
 };
@@ -686,8 +697,11 @@ describe('InstanceAiService — runtime workspace setup', () => {
 		}));
 	});
 
-	const snapshotModes = ['off', 'seeded', 'read failure'];
-	it.each(snapshotModes)('starts with snapshots %s', async (snapshotMode) => {
+	const environmentGates = ['off', 'seeded', 'read failure'].flatMap((snapshotMode) =>
+		[true, false].map((instanceContextEnabled) => ({ snapshotMode, instanceContextEnabled })),
+	);
+	it.each(environmentGates)('starts with gates %j', async (gates) => {
+		const { snapshotMode, instanceContextEnabled } = gates;
 		const service = Object.create(InstanceAiService.prototype) as unknown as {
 			createExecutionEnvironment: (
 				user: User,
@@ -695,6 +709,7 @@ describe('InstanceAiService — runtime workspace setup', () => {
 				runId: string,
 				abortSignal: AbortSignal,
 			) => Promise<{
+				instanceContextEnabled: boolean;
 				orchestrationContext: {
 					setupPanelEnabled?: boolean;
 					workspace?: unknown;
@@ -748,6 +763,7 @@ describe('InstanceAiService — runtime workspace setup', () => {
 				setPromptConfiguration: Mock;
 				setBuildMode: Mock;
 				setPromptVersion: Mock;
+				getComputerUseChannels: Mock;
 			};
 			cancelBackgroundTask: Mock;
 			backgroundTasks: { touchTask: Mock };
@@ -785,6 +801,7 @@ describe('InstanceAiService — runtime workspace setup', () => {
 				nodeUsageEnabled: false,
 				folderExplorationEnabled: false,
 				aiPreferencesEnabled: false,
+				instanceContextEnabled,
 			}),
 		};
 		service.instanceWriteAccess = { isReadOnly: vi.fn(() => false) };
@@ -819,6 +836,7 @@ describe('InstanceAiService — runtime workspace setup', () => {
 			setPromptConfiguration: vi.fn(),
 			setBuildMode: vi.fn(),
 			setPromptVersion: vi.fn(),
+			getComputerUseChannels: vi.fn(() => undefined),
 		};
 		service.cancelBackgroundTask = vi.fn();
 		service.backgroundTasks = { touchTask: vi.fn() };
@@ -862,6 +880,11 @@ describe('InstanceAiService — runtime workspace setup', () => {
 			'thread-1',
 			'run-1',
 			new AbortController().signal,
+		);
+		expect(environment.instanceContextEnabled).toBe(instanceContextEnabled);
+		expect(service.adapterService.createContext).toHaveBeenCalledWith(
+			fakeUser,
+			expect.objectContaining({ instanceContextEnabled }),
 		);
 		expect(environment.orchestrationContext.setupPanelEnabled).toBe(snapshotMode !== 'off');
 		if (snapshotMode === 'off') {
@@ -1066,6 +1089,7 @@ describe('InstanceAiService — runtime workspace setup', () => {
 				setPromptConfiguration: Mock;
 				setBuildMode: Mock;
 				setPromptVersion: Mock;
+				getComputerUseChannels: Mock;
 			};
 			cancelBackgroundTask: Mock;
 			backgroundTasks: { touchTask: Mock };
@@ -1134,6 +1158,7 @@ describe('InstanceAiService — runtime workspace setup', () => {
 			setPromptConfiguration: vi.fn(),
 			setBuildMode: vi.fn(),
 			setPromptVersion: vi.fn(),
+			getComputerUseChannels: vi.fn(() => undefined),
 		};
 		service.cancelBackgroundTask = vi.fn();
 		service.backgroundTasks = { touchTask: vi.fn() };
@@ -1410,6 +1435,29 @@ describe('InstanceAiService — run start', () => {
 		expect(service.executeRun).toHaveBeenCalled();
 	});
 
+	it('records the reported Computer Use channels so resumed runs reuse them', () => {
+		const service = createStartRunService();
+		service.startRun(
+			fakeUser,
+			'thread-a',
+			'build',
+			undefined,
+			undefined,
+			'UTC',
+			undefined,
+			undefined,
+			undefined,
+			['browser'],
+		);
+		expect(service.runState.setComputerUseChannels).toHaveBeenLastCalledWith('thread-a', [
+			'browser',
+		]);
+
+		// A client that stops reporting clears it, so nothing is advertised.
+		service.startRun(fakeUser, 'thread-a', 'continue');
+		expect(service.runState.setComputerUseChannels).toHaveBeenLastCalledWith('thread-a', undefined);
+	});
+
 	it('records each request mode for later internal runs', () => {
 		const service = createStartRunService();
 		service.startRun(
@@ -1454,6 +1502,11 @@ describe('InstanceAiService — run start', () => {
 			context,
 			'group-1',
 			undefined,
+			false,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
 		);
 	});
 
@@ -1496,6 +1549,50 @@ describe('InstanceAiService — run start', () => {
 			context,
 			'group-1',
 			undefined,
+			false,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+		);
+	});
+
+	it('passes thread artifacts into executeRun', () => {
+		const service = createStartRunService();
+		const threadArtifacts = {
+			artifacts: [{ type: 'workflow' as const, id: 'wf-1', name: 'WhatsApp FAQ Auto-Responder' }],
+			activeId: 'wf-1',
+		};
+
+		service.startRun(
+			fakeUser,
+			'thread-a',
+			'Change this',
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			threadArtifacts,
+		);
+
+		expect(service.executeRun).toHaveBeenCalledWith(
+			fakeUser,
+			'thread-a',
+			'run-1',
+			'Change this',
+			expect.any(AbortController),
+			undefined,
+			undefined,
+			'group-1',
+			undefined,
+			false,
+			undefined,
+			undefined,
+			undefined,
+			threadArtifacts,
 		);
 	});
 });
@@ -2990,6 +3087,42 @@ describe('InstanceAiService — terminal response guard wiring', () => {
 			error_source: 'exception',
 			user_id: 'user-1',
 			prompt_version: 'progressive@1',
+		});
+	});
+
+	it('includes the resolved model id on resumed-run telemetry', async () => {
+		const service = createTerminalGuardOrderService();
+		service.runState.getPromptConfiguration.mockReturnValue({ version: 'progressive@1' });
+		const abortController = new AbortController();
+		mockClaimedResumeResult({
+			status: 'completed',
+			agentRunId: 'agent-run-1',
+			text: Promise.resolve('done'),
+			workSummary: { toolCalls: [], totalToolCalls: 0, totalToolErrors: 0 },
+		});
+
+		await service.processResumedStream(
+			{},
+			{},
+			{
+				runId: 'run-1',
+				agentRunId: 'agent-run-1',
+				threadId: 'thread-a',
+				user: fakeUser,
+				toolCallId: 'tool-call-1',
+				signal: abortController.signal,
+				abortController,
+				modelId: 'anthropic/claude-sonnet-4-6',
+			},
+		);
+
+		expect(service.telemetry.track).toHaveBeenCalledWith('instance_ai_run_finished', {
+			thread_id: 'thread-a',
+			prompt_version: 'progressive@1',
+			run_id: 'run-1',
+			status: 'completed',
+			user_id: 'user-1',
+			model_id: 'anthropic/claude-sonnet-4-6',
 		});
 	});
 
@@ -4691,9 +4824,9 @@ describe('InstanceAiService — run error reporter lifecycle', () => {
 	});
 });
 
-describe('InstanceAiService setup panel Execute input', () => {
+describe('InstanceAiService run input gates', () => {
 	it.each([true, false])(
-		'forwards the Execute target only with the panel enabled: %s',
+		'forwards the setup panel target and the shared instance gate: %s',
 		async (enabled) => {
 			vi.mocked(createInstanceAiTraceContext).mockResolvedValueOnce(undefined);
 			vi.mocked(streamAgentRun).mockResolvedValueOnce({
@@ -4702,7 +4835,9 @@ describe('InstanceAiService setup panel Execute input', () => {
 				text: Promise.resolve(''),
 				workSummary: { toolCalls: [], totalToolCalls: 0, totalToolErrors: 0 },
 			});
+			const buildBlock = vi.fn().mockResolvedValue(undefined);
 			const environment = {
+				instanceContextEnabled: enabled,
 				context: { setupItemsEmitter: enabled ? {} : undefined },
 				memory: { getThread: vi.fn(async () => ({ title: 'Existing conversation' })) },
 				taskStorage: { get: vi.fn(async () => undefined) },
@@ -4714,7 +4849,7 @@ describe('InstanceAiService setup panel Execute input', () => {
 				createProxyRunConfig: vi.fn(async () => ({})),
 				browserSessionService: { getExtensionTraceContext: vi.fn() },
 				readThreadProvenance: vi.fn(async () => ({})),
-				instanceContext: { buildBlock: vi.fn().mockResolvedValue(undefined) },
+				instanceContext: { buildBlock },
 				reclassifyMaskedStreamFailure: vi.fn(async (error: unknown) => {
 					throw error;
 				}),
@@ -4754,6 +4889,7 @@ describe('InstanceAiService setup panel Execute input', () => {
 				{ source: 'setup-panel-execute', workflowId: 'wf-target' },
 			);
 
+			expect(buildBlock).toHaveBeenCalledWith(expect.objectContaining({ enabled }));
 			expect(streamAgentRun).toHaveBeenCalled();
 			const input = vi.mocked(streamAgentRun).mock.lastCall?.[1];
 			expect(input).toEqual(expect.any(String));
@@ -5063,8 +5199,14 @@ describe('InstanceAiService — editor handoff context resources', () => {
 	it('builds the context block from combined workflow and agent attachments', () => {
 		const source = InstanceAiService.toString();
 
-		expect(source).toContain('buildContextResourcesBlock(contextAttachments)');
-		expect(source).not.toContain('buildContextResourcesBlock(workflowAttachments)');
+		// Imported helpers compile to `(0,__vite_ssr_import_N__.fn)(args)`. Both
+		// arguments must reach the block, or the editor hand-off drops out of it.
+		expect(source).toMatch(
+			/buildThreadArtifactsBlock\)?\s*\(\s*threadArtifacts\s*,\s*contextAttachments\s*\)/,
+		);
+		expect(source).toMatch(/buildThreadContextBlock\)?/);
+		expect(source).not.toContain('buildContextResourcesBlock');
+		expect(source).not.toContain('EDITOR_CONTEXT_OPEN_TAG');
 	});
 
 	it('traces the attached resources, which the raw message no longer shows', () => {
@@ -6005,6 +6147,7 @@ type FollowUpStreakServiceInternals = {
 		hasLiveRun: Mock;
 		startRun: Mock;
 		getTimeZone: Mock;
+		getComputerUseChannels: Mock;
 	};
 	logger: { warn: Mock; debug: Mock; error: Mock };
 };
@@ -6023,6 +6166,7 @@ function createFollowUpStreakService(): FollowUpStreakServiceInternals {
 		hasLiveRun: vi.fn(() => false),
 		startRun: vi.fn(() => ({ runId: 'follow-up-run', abortController: new AbortController() })),
 		getTimeZone: vi.fn(() => undefined),
+		getComputerUseChannels: vi.fn(() => undefined),
 	};
 	service.logger = { warn: vi.fn(), debug: vi.fn(), error: vi.fn() };
 
@@ -6135,8 +6279,14 @@ describe('InstanceAiService — resolveAiPreferencesBlock', () => {
 		const service = createService();
 		service.aiPreferenceService.getApplicable.mockResolvedValue({
 			instance: [],
-			user: ['Keep replies short.'],
-			projects: [{ id: 'project-1', name: 'Marketing', items: ['Prefer HubSpot nodes.'] }],
+			user: [{ id: 'pref-1', content: 'Keep replies short.' }],
+			projects: [
+				{
+					id: 'project-1',
+					name: 'Marketing',
+					items: [{ id: 'pref-2', content: 'Prefer HubSpot nodes.' }],
+				},
+			],
 		});
 
 		const block = await service.resolveAiPreferencesBlock('user-1', {
