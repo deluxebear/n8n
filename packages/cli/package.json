@@ -1,6 +1,6 @@
 {
   "name": "n8n",
-  "version": "2.41.1",
+  "version": "2.41.2",
   "description": "n8n Workflow Automation Tool",
   "main": "dist/index",
   "types": "dist/index.d.ts",
@@ -189,7 +189,6 @@
     "@opentelemetry/exporter-trace-otlp-grpc": "^0.221.0",
     "@opentelemetry/exporter-trace-otlp-proto": "^0.221.0",
     "@opentelemetry/resources": "^2.10.0",
-    "@opentelemetry/sdk-node": "^0.221.0",
     "@opentelemetry/sdk-trace-base": "^2.10.0",
     "@opentelemetry/sdk-trace-node": "^2.10.0",
     "@opentelemetry/semantic-conventions": "^1.43.0",

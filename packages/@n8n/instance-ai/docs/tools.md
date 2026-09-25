@@ -474,7 +474,7 @@ confirmation card.
 `nodesStillNeedingSetup` is what nobody has configured yet, `skippedByUser` what the user
 actively dismissed and the agent must not re-open (see `reopenSkipped`).
 
-**Setup panel** (`N8N_INSTANCE_AI_SETUP_PANEL_ENABLED`): the normal setup call
+**Setup panel** (`118_instance_ai_setup_overhaul: variant`): the normal setup call
 analyzes the whole workflow, including bound slots. It publishes the `setup-items`
 snapshot and confirms that it reached storage. It then saves the build's setup
 routing marker. Only after both steps succeed does it return
@@ -609,7 +609,15 @@ Default timeout: 5 minutes; max: 10 minutes. On timeout, execution is cancelled.
 | `timeout` | number | no | 300000 | Max wait time in ms (max 600000) |
 | `triggerNodeName` | string | no | — | Trigger node to use when a workflow has more than one trigger |
 
-**Returns**: `{ executionId, status, data?, error?, startedAt?, finishedAt? }`
+**Returns**: `{ executionId, status, data?, error?, startedAt?, finishedAt?, verificationClaim? }`
+
+**Live test evidence**: `verify-built-workflow` always simulates destructive
+nodes, so a live test runs through this action. When a successful run reaches
+every planned node of the latest build, with no saved pins and no injected
+trigger input, the run is recorded as a `verified` claim on the build outcome.
+The publish gate then reads that claim. The result carries it as
+`verificationClaim`. Other runs leave the stored claim unchanged: a live run
+can raise the verdict but never lower it.
 
 **Type-aware pin data**: Constructs proper pin data per trigger type:
 - **Chat trigger**: `{ chatInput, sessionId, action }`
@@ -831,7 +839,7 @@ a service. When `needsBrowserSetup=true`, the orchestrator should load the
 directly, then call `credentials(action="setup")` again to select the created
 credential.
 
-**Setup panel** (`N8N_INSTANCE_AI_SETUP_PANEL_ENABLED`): when the call belongs
+**Setup panel** (`118_instance_ai_setup_overhaul: variant`): when the call belongs
 to a workflow (`workflowId`, or the workflow this run last saved) and the stage
 is not `finalize`, the tool does not suspend. It merges the credential types
 into the workflow's durable `setup-items` snapshot and returns

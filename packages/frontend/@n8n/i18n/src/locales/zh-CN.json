@@ -9554,5 +9554,6 @@
 	"agents.builder.tasks.schedule.invalidDescription": "该时间表无效",
 	"agents.builder.tasks.schedule.summary": "{description} · {execution}",
 	"agents.builder.tasks.schedule.executionPaused": "执行已暂停",
-	"agents.builder.header.editWithAi": "使用 n8n Assistant 进行编辑"
+	"agents.builder.header.editWithAi": "使用 n8n Assistant 进行编辑",
+	"instanceAi.setupPanel.helpOAuthState": "选择的 OAuth 模式：{mode}。连接状态：{state}。"
 }
