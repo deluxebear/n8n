@@ -44,7 +44,7 @@ import { AgentWorkflowExecutionService } from '@/modules/agents/agent-workflow-e
 import { DataTableProxyService } from '@/modules/data-table/data-table-proxy.service';
 import { NodeTypes } from '@/node-types';
 import { OwnershipService } from '@/services/ownership.service';
-import { UrlService } from '@/services/url.service';
+import { UrlService } from '@n8n/backend-services';
 import { WorkflowStatisticsService } from '@/services/workflow-statistics.service';
 import { Telemetry } from '@/telemetry';
 import {
@@ -314,7 +314,7 @@ describe('WorkflowExecuteAdditionalData', () => {
 				mock<IWorkflowBase>({
 					id: 'sub-id',
 					name: 'Sub Workflow',
-					nodes,
+					nodes: structuredClone(nodes),
 					connections: {},
 					staticData: {},
 					settings: {},
@@ -330,7 +330,12 @@ describe('WorkflowExecuteAdditionalData', () => {
 			it('checks credentials against the triggering user for an inline sub-workflow', async () => {
 				await executeWorkflow(
 					mock<IExecuteWorkflowInfo>({ id: undefined, code: subWorkflowData() }),
-					mock<IWorkflowExecuteAdditionalData>({ userId: 'user-1' }),
+					// `rootExecutionMode` explicit: a deep mock auto-stubs every
+					// property, so leaving it out would hand `??` a truthy proxy.
+					mock<IWorkflowExecuteAdditionalData>({
+						userId: 'user-1',
+						rootExecutionMode: undefined,
+					}),
 					{ parentWorkflowId: 'parent-1', executionMode: 'manual' },
 				);
 
@@ -340,6 +345,76 @@ describe('WorkflowExecuteAdditionalData', () => {
 				);
 				expect(credentialsPermissionChecker.check).not.toHaveBeenCalled();
 			});
+
+			// A sub-workflow's own WorkflowExecute runs as 'integrated', so the
+			// original mode has to come from the root.
+			it('checks against the triggering user through a nested inline sub-workflow', async () => {
+				await executeWorkflow(
+					mock<IExecuteWorkflowInfo>({ id: undefined, code: subWorkflowData() }),
+					mock<IWorkflowExecuteAdditionalData>({
+						userId: 'user-1',
+						rootExecutionMode: 'manual',
+					}),
+					mock<ExecuteWorkflowOptions>({
+						loadedWorkflowData: subWorkflowData(),
+						doNotWaitToFinish: false,
+						parentWorkflowId: 'parent-1',
+						executionMode: 'integrated',
+					}),
+				);
+
+				expect(credentialsPermissionChecker.checkForUser).toHaveBeenCalledTimes(1);
+				expect(credentialsPermissionChecker.check).not.toHaveBeenCalled();
+			});
+
+			// A triggered run now carries the publishing user for attribution. That
+			// must not turn this project check into a user check: an ordinary project
+			// credential has to keep working on a schedule even if the publisher's own
+			// access to it has since changed.
+			it('keeps the project check for an inline sub-workflow in a triggered run', async () => {
+				await executeWorkflow(
+					mock<IExecuteWorkflowInfo>({ id: undefined, code: subWorkflowData() }),
+					mock<IWorkflowExecuteAdditionalData>({
+						userId: 'publisher-1',
+						rootExecutionMode: undefined,
+					}),
+					mock<ExecuteWorkflowOptions>({
+						loadedWorkflowData: subWorkflowData(),
+						doNotWaitToFinish: false,
+						parentWorkflowId: 'parent-1',
+						executionMode: 'trigger',
+					}),
+				);
+
+				expect(credentialsPermissionChecker.check).toHaveBeenCalled();
+				expect(credentialsPermissionChecker.checkForUser).not.toHaveBeenCalled();
+			});
+
+			// A retry and an evaluation are started by a person and have carried a
+			// `userId` since long before publisher attribution existed, so narrowing
+			// the gate to manual/chat would have quietly changed them — and outside
+			// the feature flag, which never touches these modes.
+			it.each(['retry', 'evaluation'] as const)(
+				'checks against the acting user for an inline sub-workflow in a %s run',
+				async (executionMode) => {
+					await executeWorkflow(
+						mock<IExecuteWorkflowInfo>({ id: undefined, code: subWorkflowData() }),
+						mock<IWorkflowExecuteAdditionalData>({
+							userId: 'user-1',
+							rootExecutionMode: undefined,
+						}),
+						mock<ExecuteWorkflowOptions>({
+							loadedWorkflowData: subWorkflowData(),
+							doNotWaitToFinish: false,
+							parentWorkflowId: 'parent-1',
+							executionMode,
+						}),
+					);
+
+					expect(credentialsPermissionChecker.checkForUser).toHaveBeenCalledTimes(1);
+					expect(credentialsPermissionChecker.check).not.toHaveBeenCalled();
+				},
+			);
 
 			it('checks credentials against the project for a database sub-workflow', async () => {
 				await executeWorkflow(
@@ -356,13 +431,18 @@ describe('WorkflowExecuteAdditionalData', () => {
 			});
 
 			it('falls back to the project check for an inline sub-workflow without a triggering user', async () => {
+				const workflowData = subWorkflowData();
 				await executeWorkflow(
-					mock<IExecuteWorkflowInfo>({ id: undefined, code: subWorkflowData() }),
+					mock<IExecuteWorkflowInfo>({ id: undefined, code: workflowData }),
 					mock<IWorkflowExecuteAdditionalData>({ userId: undefined }),
 					{ parentWorkflowId: 'parent-1', executionMode: 'webhook' },
 				);
 
-				expect(credentialsPermissionChecker.check).toHaveBeenCalledWith('parent-1', nodes);
+				expect(credentialsPermissionChecker.check).toHaveBeenCalledWith(
+					'parent-1',
+					workflowData.nodes,
+					undefined,
+				);
 				expect(credentialsPermissionChecker.checkForUser).not.toHaveBeenCalled();
 				expect(activeExecutions.add).toHaveBeenCalledWith(
 					expect.objectContaining({
@@ -374,8 +454,10 @@ describe('WorkflowExecuteAdditionalData', () => {
 			});
 
 			it('keeps the parent identity for nested inline sub-workflows', async () => {
+				const workflowData = subWorkflowData();
+				const nestedWorkflowData = subWorkflowData();
 				await executeWorkflow(
-					{ code: subWorkflowData() },
+					{ code: workflowData },
 					mock<IWorkflowExecuteAdditionalData>({ userId: undefined }),
 					{ parentWorkflowId: 'parent-1', executionMode: 'webhook' },
 				);
@@ -383,13 +465,23 @@ describe('WorkflowExecuteAdditionalData', () => {
 				const parentWorkflowId = integratedAdditionalData.workflowId;
 				if (!parentWorkflowId) throw new Error('Expected a parent workflow ID');
 
-				await executeWorkflow({ code: subWorkflowData() }, integratedAdditionalData, {
+				await executeWorkflow({ code: nestedWorkflowData }, integratedAdditionalData, {
 					parentWorkflowId,
 					executionMode: 'webhook',
 				});
 
-				expect(credentialsPermissionChecker.check).toHaveBeenNthCalledWith(1, 'parent-1', nodes);
-				expect(credentialsPermissionChecker.check).toHaveBeenNthCalledWith(2, 'parent-1', nodes);
+				expect(credentialsPermissionChecker.check).toHaveBeenNthCalledWith(
+					1,
+					'parent-1',
+					workflowData.nodes,
+					undefined,
+				);
+				expect(credentialsPermissionChecker.check).toHaveBeenNthCalledWith(
+					2,
+					'parent-1',
+					nestedWorkflowData.nodes,
+					undefined,
+				);
 			});
 
 			it('preserves parent static-data persistence for inline definitions without an id', async () => {
@@ -431,7 +523,12 @@ describe('WorkflowExecuteAdditionalData', () => {
 				expect(integratedAdditionalData.userId).toBe('user-1');
 			});
 
-			it('does not carry the triggering user into a database sub-workflow (runs under its own project scope)', async () => {
+			// Two reasons the user has to survive this boundary. It is what lets the
+			// acting-user route pass a credential the person legitimately reaches, one
+			// level down as at the top. And an empty user sent any inline sub-workflow
+			// nested inside a stored one to the project check, which an inline
+			// sub-workflow has no project for — skipping the user check entirely.
+			it('carries the acting user into a database sub-workflow', async () => {
 				await executeWorkflow(
 					mock<IExecuteWorkflowInfo>({ id: 'db-id', code: undefined }),
 					mock<IWorkflowExecuteAdditionalData>({ userId: 'user-1' }),
@@ -441,8 +538,13 @@ describe('WorkflowExecuteAdditionalData', () => {
 					}),
 				);
 
+				expect(credentialsPermissionChecker.check).toHaveBeenCalledWith(
+					expect.anything(),
+					expect.anything(),
+					'user-1',
+				);
 				const integratedAdditionalData = vi.mocked(WorkflowExecute).mock.calls[0][0];
-				expect(integratedAdditionalData.userId).toBeUndefined();
+				expect(integratedAdditionalData.userId).toBe('user-1');
 			});
 		});
 

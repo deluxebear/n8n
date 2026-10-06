@@ -1,5 +1,7 @@
 import {
 	INSTANCE_AI_PREFILL_TYPES,
+	instanceContextAbsenceReasonSchema,
+	instanceContextSurfaceSchema,
 	INSTANCE_AI_PREFILL_TYPE_FALLBACK,
 	INSTANCE_AI_THREAD_SOURCES,
 	INSTANCE_AI_THREAD_SOURCE_FALLBACK,
@@ -7,6 +9,7 @@ import {
 import { z } from 'zod/v4';
 
 import { defineTelemetryEvents } from '../define';
+import { assistantSurfaceSchema } from '../schemas';
 import { setupItemProperties, setupTelemetryProperties } from '../setup-properties';
 
 /**
@@ -41,6 +44,40 @@ const setupSnapshotProps = {
 
 const freeNudgeVariant = z.enum(['control', 'variant-1', 'variant-2']);
 const freeNudgeTreatmentVariant = z.enum(['variant-1', 'variant-2']);
+const assistantMentionKind = z.enum(['workflow', 'node', 'group']);
+const assistantMentionTriggerSource = z.enum(['typed', 'button']);
+/** Cap on the query text the empty-search event carries; the emitter cuts to it after redaction. */
+export const ASSISTANT_MENTION_QUERY_TEXT_MAX_LENGTH = 100;
+// The composer has no thread on the empty view until the first send, so every
+// mention event carries an explicit null there rather than omitting the column.
+const assistantMentionThreadId = z
+	.string()
+	.nullable()
+	.describe('Thread the composer belongs to. Null before the first message creates one');
+const mentionCount = z.number().int().nonnegative();
+// One object rather than one column per kind: the picker will grow to agents,
+// data tables and more, and each new kind adds a key here, never a column on the
+// event. Keys match the `kind` values of the mention events.
+const assistantMentionCounts = z
+	.object({
+		total: mentionCount.describe('Sum of all kinds. Stable predicate for "has mentions"'),
+		workflow: mentionCount,
+		node: mentionCount,
+		group: mentionCount,
+	})
+	.describe('Picker mentions attached to the message, by kind');
+// Shared by the send and the response events so a with/without-mentions cut reads
+// the same columns on both.
+const mentionContextProperties = {
+	mention_counts: assistantMentionCounts,
+	attachment_count: z
+		.number()
+		.int()
+		.nonnegative()
+		.describe(
+			'All outbound attachments: files, workflow, agent and nodes attachments, including ones the host adds',
+		),
+};
 // Experiment cleanup: remove with openWorkflowInAssistant.
 const openWorkflowInAssistantVariant = z.enum(['control', 'variant']);
 
@@ -51,6 +88,48 @@ const threadActionSource = z.enum([
 	INSTANCE_AI_THREAD_SOURCE_FALLBACK,
 ]);
 const prefillType = z.enum([...INSTANCE_AI_PREFILL_TYPES, INSTANCE_AI_PREFILL_TYPE_FALLBACK]);
+
+const instanceContextTurnSchema = z.object({
+	surface: assistantSurfaceSchema,
+	user_id: z.string(),
+	thread_id: z.string().optional(),
+	run_id: z.string().describe('Turn ID shared by all segments'),
+	segment: z
+		.enum(['whole', 'suspended', 'resumed'])
+		.describe(
+			'Whole turn, pause for input, or final resumed segment. A turn can pause more than once.',
+		),
+	instance_context_enabled: z.boolean().describe('Instance activity gate result'),
+	node_usage_enabled: z.boolean().describe('Per-user node usage gate result'),
+	context_depth: z
+		.number()
+		.int()
+		.describe(
+			'Deepest attempted read: 0 none, 1 activity list, 2 activity expand or node usage, 3 workflow inspection',
+		),
+	context_surfaces: z
+		.array(z.enum(instanceContextSurfaceSchema.options))
+		.describe('Distinct context surfaces called in this segment'),
+	asked_clarifying_question: z
+		.boolean()
+		.describe('This segment asked for missing information. Combine segments with OR.'),
+	tool_calls: z.number().int().describe('Total tool calls in this segment'),
+	turn_prompt_tokens: z
+		.number()
+		.int()
+		.optional()
+		.describe('Measured prompt tokens for this segment'),
+	turn_completion_tokens: z
+		.number()
+		.int()
+		.optional()
+		.describe('Measured completion tokens for this segment'),
+	turn_total_tokens: z.number().int().optional().describe('Measured total tokens for this segment'),
+	turn_cost_usd: z.number().optional().describe('Estimated segment cost from model prices'),
+	status: z
+		.enum(['completed', 'cancelled', 'errored', 'suspended'])
+		.describe('How this segment ended'),
+});
 
 export const INSTANCE_AI_TELEMETRY = defineTelemetryEvents({
 	SETUP_PANEL_STATE_OBSERVED: {
@@ -241,11 +320,12 @@ export const INSTANCE_AI_TELEMETRY = defineTelemetryEvents({
 	USER_RECEIVED_AI_ASSISTANT_RESPONSE: {
 		name: 'User received AI Assistant response',
 		description:
-			'The initial foreground AI Assistant reply was rendered after a user submitted a chat message. Starts before attachment processing and first-thread creation, then fires once when the initial run completes or pauses for user input. Automated follow-up runs do not create another sample.',
+			'The initial foreground AI Assistant reply was rendered after a user submitted a chat message. Starts before attachment processing and first-thread creation, then fires once when the initial run completes or pauses for user input. Automated follow-up runs do not create another sample. Repeats the mention and attachment counts of the message that started the run, so outcome cuts by context need no join back to "User sent builder message".',
 		properties: z.object({
 			instance_id: z.string(),
 			thread_id: z.string(),
 			run_id: z.string().describe('Run ID returned for the user-submitted message'),
+			...mentionContextProperties,
 			latency_ms: z
 				.number()
 				.int()
@@ -421,6 +501,109 @@ export const INSTANCE_AI_TELEMETRY = defineTelemetryEvents({
 			node_count: z.number().describe('Total nodes attached across the sent message'),
 		}),
 	},
+	USER_OPENED_AI_ASSISTANT_MENTION_PICKER: {
+		name: 'User opened AI Assistant mention picker',
+		description:
+			'The user opened the n8n Assistant mention picker by typing an at sign or selecting the composer button. Every open ends in exactly one "User selected AI Assistant mention" or one "User dismissed AI Assistant mention picker", so the two together give the pick rate per open.',
+		properties: z.object({
+			thread_id: assistantMentionThreadId,
+			source: assistantMentionTriggerSource,
+		}),
+	},
+	USER_DISMISSED_AI_ASSISTANT_MENTION_PICKER: {
+		name: 'User dismissed AI Assistant mention picker',
+		description:
+			'The n8n Assistant mention picker closed without a selection. The list properties describe what was on screen at that moment: a search with result_count 0 is a resource the user could not find, a non-zero ambiguous_result_count is a list the user could not tell apart. Carries interaction metadata but no query text or resource names; the query text of an empty search is on "User searched AI Assistant mentions without results".',
+		properties: z.object({
+			thread_id: assistantMentionThreadId,
+			source: assistantMentionTriggerSource,
+			reason: z
+				.enum(['closed_menu', 'deleted_trigger', 'moved_caret', 'unavailable'])
+				.describe(
+					"How the picker closed. 'closed_menu' is Escape, a click outside or focus loss; 'deleted_trigger' is the typed at sign removed; 'moved_caret' is the caret leaving the mention; 'unavailable' is mentions turning off while open, e.g. a send starting",
+				),
+			mode: z.enum(['browse', 'search']).describe('Whether a filter query was present at close'),
+			query_length: z.number().int().nonnegative(),
+			result_count: z
+				.number()
+				.int()
+				.nonnegative()
+				.describe(
+					'Rows the user could pick at the top level when the picker closed. Headers, loading and error rows excluded; sub-menu children not counted',
+				),
+			ambiguous_result_count: z
+				.number()
+				.int()
+				.nonnegative()
+				.describe('Rows whose visible label matched at least one other row in the list'),
+			submenu_open_count: z
+				.number()
+				.int()
+				.nonnegative()
+				.describe('How many times the user opened a workflow or group sub-menu during this open'),
+		}),
+	},
+	USER_SEARCHED_AI_ASSISTANT_MENTIONS_WITHOUT_RESULTS: {
+		name: 'User searched AI Assistant mentions without results',
+		description:
+			'The n8n Assistant mention picker showed its empty state for a search query the user let settle for about a second, or closed the picker on. Fires once per distinct settled query within one picker open, so typing straight through a prefix chain like "S", "Sl", "Slack" reports "Slack" once. The one mention event that carries the query text, to learn what users try to mention and cannot.',
+		properties: z.object({
+			thread_id: assistantMentionThreadId,
+			source: assistantMentionTriggerSource,
+			query: z
+				.string()
+				.describe(
+					'The search text as typed, trimmed, with secrets and PII redacted and cut to 100 characters',
+				),
+			query_length: z.number().int().nonnegative().describe('Length of the full, uncut query'),
+			matched_node_type: z
+				.string()
+				.nullable()
+				.describe(
+					'Node type whose display name equals the query, e.g. n8n-nodes-base.slack for "slack"; null otherwise. A match means the user was likely reaching for a service or node type rather than a node they had named',
+				),
+			artifact_count: z
+				.number()
+				.int()
+				.nonnegative()
+				.describe(
+					'Workflow tabs open in the thread at the time. Nodes and groups are only searchable inside these, so 0 means no node search could have matched',
+				),
+		}),
+	},
+	USER_SELECTED_AI_ASSISTANT_MENTION: {
+		name: 'User selected AI Assistant mention',
+		description:
+			'The user selected a workflow, node, or canvas group from the n8n Assistant mention picker. A pick of a mention that is already staged also counts, so every open ends in this event or in "User dismissed AI Assistant mention picker". The event contains interaction metadata but no resource names or IDs.',
+		properties: z.object({
+			thread_id: assistantMentionThreadId,
+			kind: assistantMentionKind,
+			mode: z.enum(['browse', 'search']),
+			source: z.enum(['artifacts', 'workflows']),
+			result_position: z
+				.number()
+				.int()
+				.positive()
+				.describe('One-based position in the current search list, browse section, or submenu'),
+			query_length: z.number().int().nonnegative(),
+			already_artifact: z.boolean(),
+			artifact_origin: z
+				.enum(['built', 'fetched', 'attached', 'mentioned'])
+				.nullable()
+				.describe(
+					"How the mentioned workflow first became a tab in the thread, or null when already_artifact is false. 'built' is the assistant creating or editing it, 'fetched' is the assistant reading it in a lookup that opens a tab (even if it edits it later), 'attached' is a message or the editor hand-off attaching it, 'mentioned' is an earlier pick in this picker. Known for the current session only: after a reload an earlier mention reads as 'attached', because both reach the thread as a workflow attachment. A node or group pick with 'mentioned' is the two-step journey",
+				),
+		}),
+	},
+	USER_REMOVED_AI_ASSISTANT_MENTION: {
+		name: 'User removed AI Assistant mention',
+		description:
+			'The user removed workflow, node, or canvas group context that they added through the n8n Assistant mention picker.',
+		properties: z.object({
+			thread_id: assistantMentionThreadId,
+			kind: assistantMentionKind,
+		}),
+	},
 	USER_SENT_BUILDER_MESSAGE: {
 		name: 'User sent builder message',
 		description:
@@ -455,6 +638,7 @@ export const INSTANCE_AI_TELEMETRY = defineTelemetryEvents({
 				.describe(
 					'Whether the user edited the pre-filled text before sending. Always false for pre-fills that send without being shown. Null when the user typed the message.',
 				),
+			...mentionContextProperties,
 		}),
 	},
 	BUILDER_LISTED_WORKFLOWS: {
@@ -550,5 +734,34 @@ export const INSTANCE_AI_TELEMETRY = defineTelemetryEvents({
 					"The reason the agent gave on `leave-onboarding`: 'stop', 'explore' or 'unrelated_request'. Null for the other outcomes, or when the agent gave none",
 				),
 		}),
+	},
+	INSTANCE_CONTEXT_TURN: {
+		name: 'Instance AI instance-context turn completed',
+		description:
+			'One context result per turn segment, including turns without a block. Group by run_id. Count distinct runs, sum segment tokens, and count a question if any segment asked one.',
+		properties: z.discriminatedUnion('block_state', [
+			instanceContextTurnSchema
+				.extend({
+					block_state: z.literal('absent'),
+					absence_reason: z
+						.enum(instanceContextAbsenceReasonSchema.options)
+						.describe('Why this turn received no block'),
+				})
+				.strict(),
+			instanceContextTurnSchema
+				.extend({
+					block_state: z.literal('injected'),
+					block_is_update: z.boolean().describe('The block adds to an earlier window'),
+					block_inventory_rows: z.number().int(),
+					block_event_rows: z.number().int(),
+					block_run_rows: z.number().int(),
+					block_chars: z.number().int().describe('Exact rendered block length'),
+					block_tokens_estimated: z
+						.number()
+						.int()
+						.describe('Block token estimate at four characters per token'),
+				})
+				.strict(),
+		]),
 	},
 });

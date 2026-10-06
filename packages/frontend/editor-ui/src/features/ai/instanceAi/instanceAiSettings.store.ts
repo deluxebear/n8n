@@ -46,7 +46,7 @@ import { deriveInstanceAiConfiguration } from './instanceAiConfiguration';
 import { useInstanceAiBrowserUseExperiment } from '@/experiments/instanceAiBrowserUse';
 import { useInstanceAiComputerUseExperiment } from '@/experiments/instanceAiComputerUse';
 import { useInstanceAiSetupPanelExperiment } from '@/experiments/instanceAiSetupPanel/useInstanceAiSetupPanelExperiment';
-import type { ComputerUseChannel } from '@n8n/api-types';
+import { DEFAULT_INSTANCE_AI_PERMISSIONS, type ComputerUseChannel } from '@n8n/api-types';
 
 export const useInstanceAiSettingsStore = defineStore('instanceAiSettings', () => {
 	const rootStore = useRootStore();
@@ -100,6 +100,9 @@ export const useInstanceAiSettingsStore = defineStore('instanceAiSettings', () =
 	const isBrowserUseEnabledByAdmin = computed(
 		() => settingsStore.moduleSettings?.['instance-ai']?.browserUseEnabled === true,
 	);
+	const isMcpAvailable = computed(
+		() => settingsStore.moduleSettings?.['instance-ai']?.mcpConnectionsAvailable === true,
+	);
 
 	const { isFeatureEnabled: isBrowserUseFeatureEnabled } = useInstanceAiBrowserUseExperiment();
 	const { isFeatureEnabled: isComputerUseFeatureEnabled } = useInstanceAiComputerUseExperiment();
@@ -148,6 +151,8 @@ export const useInstanceAiSettingsStore = defineStore('instanceAiSettings', () =
 		);
 		const merged: NonNullable<FrontendModuleSettings['instance-ai']> = {
 			enabled: adminRes.enabled,
+			mcpConnectionsAvailable:
+				adminRes.mcpAccessEnabled && (prev?.mcpConnectionsAvailable ?? false),
 			localGatewayDisabled: adminRes.localGatewayDisabled ?? prev?.localGatewayDisabled ?? false,
 			browserUseEnabled: adminRes.browserUseEnabled ?? prev?.browserUseEnabled ?? true,
 			proxyEnabled: prev?.proxyEnabled ?? false,
@@ -354,7 +359,9 @@ export const useInstanceAiSettingsStore = defineStore('instanceAiSettings', () =
 	function getPermission(key: keyof InstanceAiPermissions): InstanceAiPermissionMode {
 		const draftVal = draft.permissions?.[key];
 		if (draftVal !== undefined) return draftVal;
-		return settings.value?.permissions?.[key] ?? 'require_approval';
+		// A key the server did not send falls back to its own default, not to
+		// `require_approval`: not every permission defaults to approval.
+		return settings.value?.permissions?.[key] ?? DEFAULT_INSTANCE_AI_PERMISSIONS[key];
 	}
 
 	// ── Gateway status fetch ──────────────────────────────────────────────
@@ -662,6 +669,7 @@ export const useInstanceAiSettingsStore = defineStore('instanceAiSettings', () =
 		isInstanceAiDisabled,
 		isLocalGatewayDisabled,
 		isLocalGatewayDisabledByAdmin,
+		isMcpAvailable,
 		isComputerUseAvailable,
 		isBrowserUseAvailable,
 		computerUseChannels,

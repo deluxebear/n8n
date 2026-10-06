@@ -7,6 +7,7 @@ import type {
 	IRun,
 	IWorkflowBase,
 	IWorkflowExecutionDataProcess,
+	IWorkflowSettings,
 	JsonValue,
 	WorkflowExecuteMode,
 	WorkflowSettings,
@@ -29,6 +30,7 @@ import type {
 	PolicyAttachment,
 	PolicyRule,
 } from '@/modules/type-availability-policies/policy-rule.types';
+import type { TracingContext } from '@/modules/otel/tracing-context';
 import type { McpCallerAuth } from '@/services/oauth-token-verifier-proxy.service';
 
 import type { AiEventMap } from './ai.event-map';
@@ -57,6 +59,13 @@ export type UserLike = {
  * instead of counting one save twice.
  */
 export type PolicyWriteOrigin = 'composed-save' | 'document-api';
+
+export type CrashDetector =
+	| 'stall'
+	| 'queue-recovery'
+	| 'startup-recovery'
+	| 'start-failure'
+	| 'workflow-deactivation';
 
 export type ProjectSummary = {
 	id: string;
@@ -480,7 +489,7 @@ export type RelayEventMap = {
 		credentialType: string;
 		credentialId: string;
 		credentialName: string;
-		credentialDescriptionLength: number;
+		credentialDescriptionLength?: number;
 		publicApi: boolean;
 		projectId?: string;
 		projectType?: string;
@@ -506,7 +515,7 @@ export type RelayEventMap = {
 		credentialType: string;
 		credentialId: string;
 		credentialName: string;
-		credentialDescriptionLength: number;
+		credentialDescriptionLength?: number;
 		isDynamic?: boolean;
 		usesExternalSecrets?: boolean;
 		jweEnabled?: boolean;
@@ -639,6 +648,22 @@ export type RelayEventMap = {
 		workflowId?: string;
 		workflowName?: string;
 		reason: CancellationReason;
+	};
+
+	'execution-crashed': {
+		executionId: string;
+		workflowId: string;
+		workflowName?: string;
+		mode: WorkflowExecuteMode;
+		startedAt?: Date;
+		stoppedAt: Date;
+		detector: CrashDetector;
+		hostId: string;
+		tracingContext?: TracingContext;
+		workflowVersionId?: string;
+		retryOf?: string;
+		workflowCustomTelemetryTags?: IWorkflowSettings['customTelemetryTags'];
+		project?: { id: string; customTelemetryTags: Array<{ key: string; value: string }> };
 	};
 
 	'execution-deleted': {

@@ -14,6 +14,7 @@ export * from './instance-registry-types';
 export type * from './instance-reporting';
 export type * from './worker-pools';
 export type * from './node-type-availability';
+export type * from './credential-type-availability';
 export * from './redaction-enforcement';
 export * from './redaction-enforcement-floor';
 export * from './workflow-reviews-policy';
@@ -151,8 +152,12 @@ export { ViewableMimeTypes } from './schemas/binary-data.schema';
 export { passwordSchema, createPasswordSchema } from './schemas/password.schema';
 export { n8nIdSchema } from './schemas/id.schema';
 export {
+	communityPackageNameParamSchema,
 	credentialIdParamSchema,
 	credentialTypeNameParamSchema,
+	credentialTypePolicyIdParamSchema,
+	credentialTypePolicyScopeIdParamSchema,
+	dataTableIdParamSchema,
 	executionIdParamSchema,
 	nodeTypePolicyIdParamSchema,
 	nodeTypePolicyScopeIdParamSchema,
@@ -164,7 +169,10 @@ export {
 	roleMappingRuleIdParamSchema,
 	roleSlugParamSchema,
 	tagIdParamSchema,
+	testRunIdParamSchema,
 	userIdParamSchema,
+	userIdentifierParamSchema,
+	userUuidParamSchema,
 	variableIdParamSchema,
 	workflowIdParamSchema,
 	workflowVersionIdParamSchema,
@@ -189,6 +197,8 @@ export {
 	CREDENTIAL_DESCRIPTION_MAX_LENGTH,
 	credentialDescriptionSchema,
 } from './schemas/credential-description.schema';
+export { CREDENTIAL_DESCRIPTIONS_FLAG } from './constants/credential-descriptions';
+export { EMPTY_CANVAS_GROUPS_FLAG } from './constants/empty-canvas-groups';
 export type {
 	DependencyType,
 	DependencyResourceType,
@@ -320,10 +330,14 @@ export type {
 	BreakingChangeReportResult,
 	BreakingChangeLightReportResult,
 	BreakingChangeVersion,
+	MigrationFindingStatus,
 	WorkflowMigrationResult,
 } from './schemas/breaking-changes.schema';
 
-export { MIGRATION_REPORT_TARGET_VERSION } from './schemas/breaking-changes.schema';
+export {
+	MIGRATION_REPORT_TARGET_VERSION,
+	migrationFindingStatusSchema,
+} from './schemas/breaking-changes.schema';
 
 export type {
 	SecretsProviderType,
@@ -345,11 +359,6 @@ export {
 	testSecretProviderConnectionResponseSchema,
 	reloadSecretProviderConnectionResponseSchema,
 } from './schemas/secrets-provider.schema';
-
-export {
-	communityPackageResponseSchema,
-	type CommunityPackageResponse,
-} from './schemas/community-package.schema';
 
 export {
 	publicApiCredentialResponseSchema,
@@ -384,6 +393,8 @@ export {
 	runStartPayloadSchema,
 	runFinishPayloadSchema,
 	agentSpawnedPayloadSchema,
+	agentActivitySchema,
+	agentChangeSchema,
 	agentCompletedPayloadSchema,
 	textDeltaPayloadSchema,
 	reasoningDeltaPayloadSchema,
@@ -420,20 +431,26 @@ export {
 	EVAL_VENDOR_SDK_INTERCEPTION_FLAG,
 	CONFIG_EVALUATIONS_FLAG,
 	CONFIG_EVALUATIONS_ENABLED_VARIANT,
-	INSTANCE_AI_MCP_CONNECTIONS_FLAG,
-	INSTANCE_AI_MCP_CONNECTIONS_ENABLED_VARIANT,
 	CANVAS_NODE_CONTEXT_FLAG,
+	AI_ASSISTANT_AT_MENTIONS_FLAG,
 	INSTANCE_AI_CONVERSATION_HISTORY_FLAG,
 	INSTANCE_AI_CONVERSATION_HISTORY_ENABLED_VARIANT,
 	INSTANCE_AI_PROGRESSIVE_BUILDING_FLAG,
 	INSTANCE_AI_SETUP_PANEL_FLAG,
 	INSTANCE_AI_SETUP_PANEL_ENABLED_VARIANT,
 	INSTANCE_AI_PROGRESSIVE_BUILDING_ENABLED_VARIANT,
+	INSTANCE_AI_CONCISE_STYLE_FLAG,
+	INSTANCE_AI_CONCISE_STYLE_ENABLED_VARIANT,
 	INSTANCE_AI_NODE_USAGE_FLAG,
 	INSTANCE_AI_FOLDER_EXPLORATION_FLAG,
 	INSTANCE_ACTIVITY_CONTEXT_FLAG,
 	INSTANCE_AI_FOLDER_EXPLORATION_ENABLED_VARIANT,
 	computerUseChannelSchema,
+	INSTANCE_CONTEXT_SURFACE_DEPTH,
+	instanceContextSurfaceSchema,
+	instanceContextReachSchema,
+	instanceContextAbsenceReasonSchema,
+	instanceContextInjectionSchema,
 	domainAccessActionSchema,
 	domainAccessMetaSchema,
 	instanceAiApprovalResumeSchema,
@@ -445,6 +462,9 @@ export {
 	instanceAiAgentPreviewHandoffContextSchema,
 	instanceAiHandoffContextSchema,
 	instanceAiThreadArtifactSchema,
+	instanceAiThreadTabRefSchema,
+	instanceAiThreadTabSchema,
+	instanceAiThreadTabsStateSchema,
 	instanceAiThreadArtifactsContextSchema,
 	gatewayConfirmationRequiredWirePayloadSchema,
 	gatewayConfirmationRequiredPayloadSchema,
@@ -482,6 +502,8 @@ export {
 	MAX_TOTAL_ATTACHMENT_DECODED_BYTES,
 	MAX_ATTACHMENT_BASE64_BYTES,
 	MAX_TOTAL_ATTACHMENT_BASE64_BYTES,
+	MAX_INSTANCE_AI_ATTACHMENTS_PER_MESSAGE,
+	MAX_INSTANCE_AI_NODES_PER_SET,
 	instanceAiResourceAttachmentSchema,
 	instanceAiWorkflowAttachmentSchema,
 	InstanceAiThreadMessagesQuery,
@@ -520,6 +542,7 @@ export type {
 	InstanceAiPromptConfiguration,
 	InstanceAiPrefillType,
 	InstanceAiPrefillTypeReported,
+	InstanceAiPrefillPayload,
 	InstanceAiThreadSource,
 	InstanceAiThreadSourcePersisted,
 	InstanceAiThreadOrigin,
@@ -559,6 +582,8 @@ export type {
 	InstanceAiCredentialSetupHint,
 	InstanceAiAgentStatus,
 	InstanceAiAgentKind,
+	InstanceAiAgentActivity,
+	InstanceAiAgentChange,
 	TaskItem,
 	TaskList,
 	InstanceAiRunStartEvent,
@@ -574,6 +599,10 @@ export type {
 	InstanceAiSetupItem,
 	InstanceAiSetupItemsEvent,
 	InstanceAiPreferencesAppliedEvent,
+	InstanceAiPreferenceCardEvent,
+	InstanceAiPreferenceCardUndoResponse,
+	InstanceAiPreferenceCardEditResponse,
+	PreferenceCardPayload,
 	AiPreferencesAppliedPayload,
 	InstanceAiErrorEvent,
 	InstanceAiFilesystemRequestEvent,
@@ -590,6 +619,11 @@ export type {
 	InstanceAiToolCallState,
 	InstanceAiAgentNode,
 	InstanceAiTimelineEntry,
+	InstanceContextSurface,
+	InstanceContextReach,
+	InstanceContextLegs,
+	InstanceContextAbsenceReason,
+	InstanceContextInjection,
 	InstanceAiMessage,
 	InstanceAiThreadSummary,
 	InstanceAiSSEConnectionState,
@@ -603,6 +637,8 @@ export type {
 	InstanceAiRunDebugStep,
 	InstanceAiRunDebugWorkflowCodeSnapshot,
 	InstanceAiRunDebugResponse,
+	InstanceAiEvalThreadMemoryResponse,
+	InstanceAiEvalObservation,
 	InstanceAiThreadDebugRunsResponse,
 	InstanceAiRichMessagesResponse,
 	InstanceAiMemoryTaskKind,
@@ -641,6 +677,10 @@ export type {
 	InstanceAiAgentPreviewHandoffContext,
 	InstanceAiHandoffContext,
 	InstanceAiThreadArtifact,
+	InstanceAiThreadTabRef,
+	InstanceAiThreadTab,
+	InstanceAiThreadTabsState,
+	InstanceAiThreadTabsResponse,
 	InstanceAiThreadArtifactsContext,
 	GatewayConfirmationRequiredWirePayload,
 	GatewayConfirmationRequiredPayload,
@@ -667,6 +707,13 @@ export type {
 	InstanceAiEvalSeedAgent,
 	InstanceAiEvalSeedFolder,
 } from './schemas/instance-ai.schema';
+
+export {
+	instanceAiSetupCredentialSelectionKey,
+	instanceAiSetupCredentialAppliedKey,
+	readPendingInstanceAiSetupCredentialSelections,
+	type InstanceAiSetupCredentialSelection,
+} from './schemas/instance-ai-setup-credential-selection';
 
 export type {
 	McpRegistryServerStatus,
@@ -695,12 +742,24 @@ export {
 	parseMessageBlocks,
 	parseUsageSummary,
 	parseInputExtras,
+	parseStepConfig,
 	parseOutputDisplayBlocks,
 	parseOutputExtras,
 	parseStepSummary,
+	parseStepCacheBreaks,
 } from './schemas/llm-step-display';
 
-export type { ReadableContentBlock, ReadableSegment } from './schemas/llm-step-display';
+export type {
+	CacheBreakCause,
+	StepCacheBreak,
+	ReadableContentBlock,
+	ReadableSegment,
+	ReadableStepConfig,
+	ReadableStepSetting,
+	ReadableStepTool,
+	ReadableUsageRow,
+	ReadableUsageSummary,
+} from './schemas/llm-step-display';
 
 export {
 	startTestRunPayloadSchema,
@@ -832,6 +891,10 @@ export {
 	type ProxyHeaderInput,
 } from './constants/proxy-feature';
 export {
+	GROUPS_WITH_TRIGGERS_FLAG,
+	GROUPS_WITH_MANY_BOUNDARIES_FLAG,
+} from './constants/canvas-feature-flags';
+export {
 	MOONSHOTAI_KIMI_K3_MODEL_ID,
 	MOONSHOTAI_KIMI_K3_MODEL_NAME,
 	MOONSHOTAI_KIMI_K3_PROVIDER,
@@ -843,6 +906,7 @@ export {
 	SSO_ERROR_QUERY_PARAM,
 	SSO_ERROR_LOGIN_FAILED,
 } from './constants/role-mapping';
+export { SSO_LOGIN_REQUIRED_ERROR_CODE } from './constants/auth';
 
 export {
 	instanceAiApprovalDetailsSchema,
