@@ -9555,5 +9555,7 @@
 	"agents.builder.tasks.schedule.summary": "{description} · {execution}",
 	"agents.builder.tasks.schedule.executionPaused": "执行已暂停",
 	"agents.builder.header.editWithAi": "使用 n8n Assistant 进行编辑",
-	"instanceAi.setupPanel.helpOAuthState": "选择的 OAuth 模式：{mode}。连接状态：{state}。"
+	"instanceAi.setupPanel.helpOAuthState": "选择的 OAuth 模式：{mode}。连接状态：{state}。",
+	"aiAssistant.builder.creditBanner.textUbb": "还剩 {remaining} 个积分",
+	"instanceAi.onboardingGreeting.thinkingActivity": "准备你的第一个问题"
 }
