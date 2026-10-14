@@ -26,7 +26,7 @@ import type {
 } from 'n8n-workflow';
 
 import { NodeTypes } from '@/node-types';
-import { CacheService } from '@/services/cache/cache.service';
+import { CacheService } from '@n8n/backend-services';
 
 import type { Method } from './webhook.types';
 
@@ -501,6 +501,7 @@ export class WebhookService {
 		property: string,
 		defaultValue?: string | boolean,
 	) {
+		// TODO(native-evaluation rollout, CAT-4699): remove the native resolution, keep the engine call.
 		const native = resolveWebhookDescriptionField(node, webhookDescription, property);
 		if (native.resolved) return native.value;
 

@@ -5,14 +5,12 @@ import type { EvaluationConfigRepository } from '@n8n/db';
 import { mock } from 'vitest-mock-extended';
 import type { IConnections, IRunData } from 'n8n-workflow';
 
-import { BadRequestError } from '@/errors/response-errors/bad-request.error';
-import { ForbiddenError } from '@/errors/response-errors/forbidden.error';
-import { NotFoundError } from '@/errors/response-errors/not-found.error';
+import { BadRequestError, ForbiddenError, NotFoundError } from '@n8n/errors';
 import type { ExecutionPersistence } from '@/executions/execution-persistence';
 import type { ExecutionRedactionServiceProxy } from '@/executions/execution-redaction-proxy.service';
 import type { DataTableColumn } from '@/modules/data-table/data-table-column.entity';
 import type { DataTableService } from '@/modules/data-table/data-table.service';
-import type { InstanceWriteAccessService } from '@/services/instance-write-access.service';
+import type { InstanceWriteAccessService } from '@n8n/backend-services';
 import { userHasScopes } from '@/permissions.ee/check-access';
 
 import { EvaluationDatasetService } from '../evaluation-dataset.service';

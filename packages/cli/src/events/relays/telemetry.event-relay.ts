@@ -1,5 +1,6 @@
-import { LicenseState } from '@n8n/backend-common';
 import { EMPTY_CANVAS_GROUPS_FLAG } from '@n8n/api-types';
+import { LicenseState } from '@n8n/backend-common';
+import { EventService } from '@n8n/backend-services';
 import { GlobalConfig } from '@n8n/config';
 import {
 	CredentialsRepository,
@@ -37,7 +38,6 @@ import semver from 'semver';
 import config from '@/config';
 import { N8N_VERSION } from '@/constants';
 import { DynamicCredentialsProxy } from '@/credentials/dynamic-credentials-proxy';
-import { EventService } from '@/events/event.service';
 import type { RelayEventMap } from '@/events/maps/relay.event-map';
 import { determineFinalExecutionStatus } from '@/execution-lifecycle/shared/shared-hook-functions';
 import type { IExecutionTrackProperties } from '@/interfaces';
@@ -1591,6 +1591,7 @@ export class TelemetryEventRelay extends EventRelay {
 			runData.status = 'canceled';
 		}
 
+		// oxlint-disable-next-line typescript/no-deprecated
 		telemetryProperties.success = !!runData?.finished;
 
 		// const executionStatus: ExecutionStatus = runData?.status ?? 'unknown';
@@ -1767,6 +1768,7 @@ export class TelemetryEventRelay extends EventRelay {
 
 		const isS3Selected = this.binaryDataConfig.mode === 's3';
 		const isS3Available = this.binaryDataConfig.availableModes.includes('s3');
+		// oxlint-disable-next-line typescript/no-deprecated
 		const isS3Licensed = this.license.isBinaryDataS3Licensed();
 		const authenticationMethod = config.getEnv('userManagement.authenticationMethod');
 		const dbVersion = await this.dbConnection.getDbVersion();

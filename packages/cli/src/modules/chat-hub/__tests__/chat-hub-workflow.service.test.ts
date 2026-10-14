@@ -134,6 +134,7 @@ describe('ChatHubWorkflowService', () => {
 
 			expect(policyEnforcementService.enforceWorkflowSave).toHaveBeenCalledWith(
 				expect.objectContaining({ storedWorkflow: null, projectId: 'project-789' }),
+				{ kind: 'user', user: { id: 'user-123' } },
 			);
 			expect(workflowRepository.createContent).toHaveBeenCalledWith(
 				expect.anything(),
@@ -204,6 +205,7 @@ describe('ChatHubWorkflowService', () => {
 
 			expect(policyEnforcementService.enforceWorkflowSave).toHaveBeenCalledWith(
 				expect.objectContaining({ projectId: 'project-789' }),
+				{ kind: 'user', user: { id: 'user-123' } },
 			);
 			expect(workflowRepository.createContent).toHaveBeenCalledWith(
 				expect.anything(),
@@ -237,6 +239,7 @@ describe('ChatHubWorkflowService', () => {
 					workflow: expect.objectContaining({ id: 'workflow-1' }),
 					projectId: 'project-1',
 				}),
+				{ kind: 'user', user: expect.objectContaining({ id: 'user-1' }) },
 			);
 			expect(workflowRepository.createContent).toHaveBeenCalledWith(
 				expect.anything(),

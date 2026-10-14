@@ -25,6 +25,7 @@ import type {
 	InstanceAiPermissions,
 	InstanceAiSetupItem,
 	McpTool,
+	McpToolPermissions,
 	McpToolCallRequest,
 	McpToolCallResult,
 } from '@n8n/api-types';
@@ -168,6 +169,8 @@ export interface ExecutionResult {
 	 * so the run is not a live test of it.
 	 */
 	workflowPinnedNodeNames?: string[];
+	/** Nodes whose output items carry file data, which `data` omits. */
+	binaryOutputNodeNames?: string[];
 	/** Node-level errors from run data, including continue-on-fail errors. */
 	nodeErrors?: ExecutionNodeError[];
 	/** Name of the last node the execution processed, when available. */
@@ -1968,7 +1971,7 @@ export interface McpServerConfig {
 	command?: string;
 	args?: string[];
 	env?: Record<string, string>;
-	toolFilter?: { mode: 'allow' | 'exclude'; tools: string[] };
+	toolPermissions?: McpToolPermissions;
 	fetch?: typeof fetch;
 	/**
 	 * Optional cache discriminator used by `McpClientManager` when a server's
@@ -2136,6 +2139,11 @@ export interface InstanceAiTraceContext {
 	 * for any agent (main or sub-agent) whose spans should join this trace.
 	 */
 	onMemoryTaskEvent?: (event: ScopedMemoryTaskEvent) => void;
+	/**
+	 * Keep the trace open until a background operation settles, so its spans
+	 * finish normally when it outlives the root run.
+	 */
+	keepOpenUntilSettled?: (operation: Promise<unknown>) => void;
 	/** Trace replay mode: 'record' captures tool I/O, 'replay' remaps IDs, 'off' disables. */
 	replayMode: TraceReplayMode;
 	/** Shared ID remapper instance — available in 'replay' mode. */

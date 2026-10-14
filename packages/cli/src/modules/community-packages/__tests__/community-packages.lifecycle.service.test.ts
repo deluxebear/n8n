@@ -1,11 +1,11 @@
 import type { CommunityNodeType } from '@n8n/api-types';
 import type { Logger } from '@n8n/backend-common';
+import type { EventService } from '@n8n/backend-services';
 import type { InstanceSettingsLoaderConfig } from '@n8n/config';
 import { mock } from 'vitest-mock-extended';
 
 import { IncompatibleNodesApiVersionError } from '@/errors/response-errors/incompatible-nodes-api-version.error';
-import { BadRequestError } from '@/errors/response-errors/bad-request.error';
-import type { EventService } from '@/events/event.service';
+import { BadRequestError } from '@n8n/errors';
 import type { Push } from '@/push';
 
 import type { CommunityNodeTypesService } from '../community-node-types.service';
@@ -35,6 +35,8 @@ describe('CommunityPackagesLifecycleService', () => {
 	});
 	const communityPackagesConfig = mock<CommunityPackagesConfig>({
 		unverifiedEnabled: true,
+		registry: 'https://registry.npmjs.org',
+		authToken: '',
 	});
 	const instanceSettingsLoaderConfig = mock<InstanceSettingsLoaderConfig>({
 		communityPackagesManagedByEnv: false,
@@ -360,7 +362,30 @@ describe('CommunityPackagesLifecycleService', () => {
 			expect(mockedExecuteNpmCommand).toHaveBeenCalledWith(['outdated', '--json'], {
 				doNotHandleError: true,
 				cwd: '/tmp/n8n-nodes-download',
+				registry: communityPackagesConfig.registry,
+				authToken: communityPackagesConfig.authToken || undefined,
 			});
+		});
+
+		it('should pass custom registry and auth token to npm outdated', async () => {
+			communityPackagesConfig.unverifiedEnabled = true;
+			communityPackagesConfig.registry = 'http://localhost:4873';
+			communityPackagesConfig.authToken = 'my-secret-token';
+			communityPackagesService.getAllInstalledPackages.mockResolvedValue([installedPackage]);
+			communityPackagesService.matchPackagesWithUpdates.mockReturnValue([installedPackage]);
+			Object.defineProperty(communityPackagesService, 'hasMissingPackages', { value: false });
+
+			await lifecycle.listInstalledPackages();
+
+			expect(mockedExecuteNpmCommand).toHaveBeenCalledWith(['outdated', '--json'], {
+				doNotHandleError: true,
+				cwd: '/tmp/n8n-nodes-download',
+				registry: 'http://localhost:4873',
+				authToken: 'my-secret-token',
+			});
+
+			communityPackagesConfig.registry = 'https://registry.npmjs.org';
+			communityPackagesConfig.authToken = '';
 		});
 
 		it('should not run npm outdated when unverifiedEnabled is false', async () => {

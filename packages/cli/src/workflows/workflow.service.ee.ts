@@ -31,12 +31,12 @@ import {
 } from 'n8n-workflow';
 
 import { ActiveWorkflowManager } from '@/active-workflow-manager';
-import { CredentialsFinderService } from '@/credentials/credentials-finder.service';
+import { isCredSharingEnabled } from '@/constants/credential-sharing';
+import { CredentialsFinderService } from '@n8n/backend-services';
 import { CredentialsService } from '@/credentials/credentials.service';
 import { EnterpriseCredentialsService } from '@/credentials/credentials.service.ee';
 import { FolderNotFoundError } from '@/errors/folder-not-found.error';
-import { BadRequestError } from '@/errors/response-errors/bad-request.error';
-import { NotFoundError } from '@/errors/response-errors/not-found.error';
+import { BadRequestError, NotFoundError } from '@n8n/errors';
 import { TransferWorkflowError } from '@/errors/response-errors/transfer-workflow.error';
 import {
 	AGENT_CONFIG_ID_KEYS,
@@ -119,10 +119,6 @@ export class EnterpriseWorkflowService {
 		currentUser: User,
 	): Promise<void> {
 		workflow.usedCredentials = [];
-		const userCredentials = await this.credentialsService.getCredentialsAUserCanUseInAWorkflow(
-			currentUser,
-			{ workflowId: workflow.id },
-		);
 		const credentialIdsUsedByWorkflow = new Set<string>();
 		workflow.nodes.forEach((node) => {
 			if (!node.credentials) {
@@ -136,11 +132,15 @@ export class EnterpriseWorkflowService {
 				credentialIdsUsedByWorkflow.add(credential.id);
 			});
 		});
-		const workflowCredentials = await this.credentialsRepository.getManyByIds(
-			Array.from(credentialIdsUsedByWorkflow),
-			{ withSharings: true },
+		const credentialIds = Array.from(credentialIdsUsedByWorkflow);
+		const workflowCredentials = await this.credentialsRepository.getManyByIds(credentialIds, {
+			withSharings: true,
+		});
+		const usableCredentialIds = await this.findUsableCredentialIds(
+			currentUser,
+			credentialIds,
+			workflow.id,
 		);
-		const userCredentialIds = userCredentials.map((credential) => credential.id);
 		workflowCredentials.forEach((credential) => {
 			const credentialId = credential.id;
 			const filledCred = this.ownershipService.addOwnedByAndSharedWith(credential);
@@ -148,11 +148,34 @@ export class EnterpriseWorkflowService {
 				id: credentialId,
 				name: credential.name,
 				type: credential.type,
-				currentUserHasAccess: userCredentialIds.includes(credentialId),
+				currentUserCanUse: usableCredentialIds.has(credentialId),
 				homeProject: filledCred.homeProject,
 				sharedWithProjects: filledCred.sharedWithProjects,
 			});
 		});
+	}
+
+	private async findUsableCredentialIds(
+		user: User,
+		credentialIds: string[],
+		workflowId: WorkflowId,
+	): Promise<ReadonlySet<string>> {
+		if (credentialIds.length === 0) return new Set();
+
+		if (isCredSharingEnabled()) {
+			const unusable = await this.credentialsFinderService.findUnusableCredentialsForUser(
+				user,
+				credentialIds,
+			);
+			const unusableIds = new Set(unusable.map((c) => c.id));
+			return new Set(credentialIds.filter((id) => !unusableIds.has(id)));
+		}
+
+		const userCredentials = await this.credentialsService.getCredentialsAUserCanUseInAWorkflow(
+			user,
+			{ workflowId },
+		);
+		return new Set(userCredentials.map((credential) => credential.id));
 	}
 
 	validateCredentialPermissionsToUser(
@@ -203,8 +226,10 @@ export class EnterpriseWorkflowService {
 		/**
 		 * We only need to check nodes that use credentials the current user cannot access,
 		 * since these can be 2 possibilities:
-		 * - It matches exactly one previous node: it's a read only node and therefore cannot be changed
-		 * - It's a new node which indicates tampering and therefore must fail saving
+		 * - It matches exactly one previous node that already used such a credential: it's a
+		 *   read only node and therefore cannot be changed
+		 * - It's a new node, or an editable node that newly references such a credential,
+		 *   which indicates tampering and therefore must fail saving
 		 */
 
 		const allowedCredentialIds = credentialsUserHasAccessTo.map((cred) => cred.id);
@@ -217,6 +242,15 @@ export class EnterpriseWorkflowService {
 		if (nodesWithCredentialsUserDoesNotHaveAccessTo.size === 0) {
 			return newWorkflowVersion;
 		}
+
+		// A node the user could not use before stays read only and is restored. A node
+		// the user could edit that now carries a credential they cannot use fails the
+		// save like a new node does; restoring it would drop the other edits silently.
+		const readOnlyNodeIds = new Set(
+			this.getNodesWithInaccessibleCreds(previousWorkflowVersion, allowedCredentialIds).map(
+				(node) => node.id,
+			),
+		);
 
 		// Node ids are meant to be unique. Edge case: where stored data still repeats one, match the
 		// first node.
@@ -239,7 +273,7 @@ export class EnterpriseWorkflowService {
 			const previousNode = previousNodesById.get(node.id);
 			const idClaimedOnce = submittedIdCounts.get(node.id) === 1;
 
-			if (!previousNode || !idClaimedOnce) {
+			if (!previousNode || !idClaimedOnce || !readOnlyNodeIds.has(node.id)) {
 				this.logger.warn('Blocked workflow update due to tampering attempt', {
 					nodeType: node.type,
 					nodeName: node.name,
@@ -545,10 +579,10 @@ export class EnterpriseWorkflowService {
 		}
 
 		// 6. validate against the destination project's policy
-		await this.policyEnforcementService.enforceWorkflowTransfer({
-			workflow,
-			targetProjectId: destinationProject.id,
-		});
+		await this.policyEnforcementService.enforceWorkflowTransfer(
+			{ workflow, targetProjectId: destinationProject.id },
+			{ kind: 'user', user },
+		);
 
 		const wasActive = this.isActiveWorkflow(workflow);
 
@@ -704,7 +738,9 @@ export class EnterpriseWorkflowService {
 
 	private async attemptWorkflowReactivation(workflowId: string, versionId: string, userId: string) {
 		try {
-			await this.activeWorkflowManager.add(workflowId, 'update');
+			await this.activeWorkflowManager.add(workflowId, 'update', undefined, {
+				actor: { kind: 'user', user: { id: userId } },
+			});
 
 			return;
 		} catch (error) {
@@ -785,7 +821,7 @@ export class EnterpriseWorkflowService {
 		credentialIds: string[],
 		projectId: string,
 	) {
-		await this.workflowRepository.manager.transaction(async (trx) => {
+		await this.workflowRepository.runInTransaction({}, async (trx, ctx) => {
 			let credentialIdsToShare: string[];
 
 			if (hasGlobalScope(user, ['credential:share'], { mode: 'allOf' })) {
@@ -795,7 +831,7 @@ export class EnterpriseWorkflowService {
 					await this.credentialsFinderService.getCredentialIdsByUserAndRole(
 						[user.id],
 						{ scopes: ['credential:share'] },
-						trx,
+						ctx,
 					),
 				);
 				credentialIdsToShare = credentialIds.filter((id) => accessibleIds.has(id));

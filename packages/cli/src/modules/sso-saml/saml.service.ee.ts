@@ -17,12 +17,10 @@ import type {
 	PostBindingContext,
 } from 'samlify/types/src/entity';
 
-import { AuthError } from '@/errors/response-errors/auth.error';
-import { BadRequestError } from '@/errors/response-errors/bad-request.error';
+import { AuthError, BadRequestError } from '@n8n/errors';
 import { buildSamlClaimsContext } from '@/modules/provisioning.ee/claims-context.builder';
 import { ProvisioningService } from '@/modules/provisioning.ee/provisioning.service.ee';
-import { CacheService } from '@/services/cache/cache.service';
-import { UrlService } from '@n8n/backend-services';
+import { CacheService, UrlService } from '@n8n/backend-services';
 import {
 	getSamlLoginLabel,
 	isSamlLicensedAndEnabled,
@@ -310,8 +308,9 @@ export class SamlService {
 
 		binding ??= this._samlPreferences.loginBinding ?? 'redirect';
 		const sp = this.getServiceProviderInstance();
-		sp.entitySetting.relayState = relayState ?? this.urlService.getInstanceBaseUrl();
-		const loginRequest = sp.createLoginRequest(idp, binding);
+		const loginRequest = sp.createLoginRequest(idp, binding, {
+			relayState: relayState ?? this.urlService.getInstanceBaseUrl(),
+		});
 		return {
 			binding,
 			context: binding === 'post' ? loginRequest : loginRequest,

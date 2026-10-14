@@ -17,6 +17,7 @@ import {
 
 import { useUsersStore } from '@n8n/stores/users.store';
 import { useExternalHooks } from '@/app/composables/useExternalHooks';
+import { useNodeTypesStore } from '@/app/stores/nodeTypes.store';
 
 import { useActions } from '../../composables/useActions';
 import { useKeyboardNavigation } from '../../composables/useKeyboardNavigation';
@@ -59,6 +60,7 @@ const {
 } = useActions();
 
 const nodeCreatorStore = useNodeCreatorStore();
+const nodeTypesStore = useNodeTypesStore();
 const { openSampleWorkflowTemplate } = useCalloutHelpers();
 
 // We only inject labels if search is empty
@@ -141,7 +143,7 @@ const containsAPIAction = computed(() => {
 		return ((p as ActionCreateElement).properties.actionKey ?? '') === CUSTOM_API_CALL_KEY;
 	});
 
-	return result;
+	return result && !nodeTypesStore.isNodeTypeUnavailable(HTTP_REQUEST_NODE_TYPE);
 });
 
 const isTriggerRootView = computed(() => rootView.value === TRIGGER_NODE_CREATOR_VIEW);
@@ -188,7 +190,6 @@ function onSelected(actionCreateElement: INodeCreateElement) {
 		openSampleWorkflowTemplate(actionCreateElement.properties.templateId, {
 			telemetry: {
 				source: 'nodeCreator',
-				section: useViewStacks().activeViewStack.title,
 			},
 		});
 	}

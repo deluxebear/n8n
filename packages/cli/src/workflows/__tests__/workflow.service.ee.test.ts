@@ -1,5 +1,6 @@
 import type {
 	CredentialsEntity,
+	CredentialsRepository,
 	FolderRepository,
 	Project,
 	SharedWorkflow,
@@ -14,11 +15,19 @@ import { WorkflowActivationError } from 'n8n-workflow';
 import { mock } from 'vitest-mock-extended';
 
 import type { ActiveWorkflowManager } from '@/active-workflow-manager';
+import type { CredentialsFinderService } from '@n8n/backend-services';
+import type { CredentialsService } from '@/credentials/credentials.service';
 import type { PolicyEnforcementService } from '@/policy/policy-enforcement.service';
+import type { OwnershipService } from '@/services/ownership.service';
 import type { ProjectService } from '@/services/project.service.ee';
 import type { WorkflowFinderService } from '@/workflows/workflow-finder.service';
 import type { WorkflowMutationHooksProxy } from '@/workflows/workflow-mutation-hooks-proxy.service';
 import { EnterpriseWorkflowService } from '@/workflows/workflow.service.ee';
+
+const flags = { credSharingEnabled: false };
+vi.mock('@/constants/credential-sharing', () => ({
+	isCredSharingEnabled: () => flags.credSharingEnabled,
+}));
 
 describe('EnterpriseWorkflowService', () => {
 	let service: EnterpriseWorkflowService;
@@ -30,19 +39,24 @@ describe('EnterpriseWorkflowService', () => {
 	const projectService = mock<ProjectService>();
 	const folderRepository = mock<FolderRepository>();
 	const policyEnforcementService = mock<PolicyEnforcementService>();
+	const credentialsRepository = mock<CredentialsRepository>();
+	const credentialsService = mock<CredentialsService>();
+	const ownershipService = mock<OwnershipService>();
+	const credentialsFinderService = mock<CredentialsFinderService>();
 
 	beforeEach(() => {
 		vi.clearAllMocks();
+		flags.credSharingEnabled = false;
 		service = new EnterpriseWorkflowService(
 			mock(), // logger
 			mock(), // sharedWorkflowRepository
 			workflowRepository,
-			mock(), // credentialsRepository
-			mock(), // credentialsService
-			mock(), // ownershipService
+			credentialsRepository,
+			credentialsService,
+			ownershipService,
 			projectService,
 			activeWorkflowManager,
-			mock(), // credentialsFinderService
+			credentialsFinderService,
 			mock(), // enterpriseCredentialsService
 			workflowFinderService,
 			folderRepository,
@@ -250,6 +264,78 @@ describe('EnterpriseWorkflowService', () => {
 		});
 	});
 
+	describe('addCredentialsToWorkflow()', () => {
+		const user = mock<User>({ id: 'user-1' });
+
+		const buildWorkflow = () =>
+			mock<Parameters<EnterpriseWorkflowService['addCredentialsToWorkflow']>[0]>({
+				id: 'workflow-1',
+				nodes: [{ credentials: { googlePalmApi: { id: 'cred-1', name: 'Google' } } }],
+				usedCredentials: undefined,
+			});
+
+		beforeEach(() => {
+			credentialsRepository.getManyByIds.mockResolvedValue([
+				mock<CredentialsEntity>({ id: 'cred-1', name: 'Google', type: 'googlePalmApi' }),
+			]);
+			ownershipService.addOwnedByAndSharedWith.mockImplementation((entity) =>
+				Object.assign(entity, { homeProject: null, sharedWithProjects: [] }),
+			);
+		});
+
+		it('describes every referenced credential regardless of access', async () => {
+			credentialsService.getCredentialsAUserCanUseInAWorkflow.mockResolvedValue([]);
+			const workflow = buildWorkflow();
+
+			await service.addCredentialsToWorkflow(workflow, user);
+
+			expect(workflow.usedCredentials).toMatchObject([
+				{ id: 'cred-1', name: 'Google', type: 'googlePalmApi', currentUserCanUse: false },
+			]);
+		});
+
+		it('when the flag is off, asks the project-scoped check', async () => {
+			credentialsService.getCredentialsAUserCanUseInAWorkflow.mockResolvedValue([
+				mock({ id: 'cred-1' }),
+			]);
+			const workflow = buildWorkflow();
+
+			await service.addCredentialsToWorkflow(workflow, user);
+
+			expect(credentialsService.getCredentialsAUserCanUseInAWorkflow).toHaveBeenCalledWith(user, {
+				workflowId: 'workflow-1',
+			});
+			expect(credentialsFinderService.findUnusableCredentialsForUser).not.toHaveBeenCalled();
+			expect(workflow.usedCredentials).toMatchObject([{ id: 'cred-1', currentUserCanUse: true }]);
+		});
+
+		it('when the flag is on, asks the identity-based check instead', async () => {
+			flags.credSharingEnabled = true;
+			credentialsFinderService.findUnusableCredentialsForUser.mockResolvedValue([]);
+			const workflow = buildWorkflow();
+
+			await service.addCredentialsToWorkflow(workflow, user);
+
+			expect(credentialsFinderService.findUnusableCredentialsForUser).toHaveBeenCalledWith(user, [
+				'cred-1',
+			]);
+			expect(credentialsService.getCredentialsAUserCanUseInAWorkflow).not.toHaveBeenCalled();
+			expect(workflow.usedCredentials).toMatchObject([{ id: 'cred-1', currentUserCanUse: true }]);
+		});
+
+		it('when the flag is on, a credential the identity check rejects is unusable', async () => {
+			flags.credSharingEnabled = true;
+			credentialsFinderService.findUnusableCredentialsForUser.mockResolvedValue([
+				mock({ id: 'cred-1' }),
+			]);
+			const workflow = buildWorkflow();
+
+			await service.addCredentialsToWorkflow(workflow, user);
+
+			expect(workflow.usedCredentials).toMatchObject([{ id: 'cred-1', currentUserCanUse: false }]);
+		});
+	});
+
 	describe('validateWorkflowCredentialUsage() - unresolved credentials', () => {
 		// Real objects, not mock<IWorkflowBase>, so the explicit null id survives.
 		const nodeWithNullCred = (id: string, name: string) =>
@@ -307,6 +393,127 @@ describe('EnterpriseWorkflowService', () => {
 			expect(() =>
 				service.validateWorkflowCredentialUsage(newVersion, previousVersion, []),
 			).not.toThrow();
+		});
+	});
+
+	describe('validateWorkflowCredentialUsage() - credential added to an existing node', () => {
+		const httpNode = (
+			credentials?: INode['credentials'],
+			parameters: Record<string, unknown> = { url: '' },
+		) =>
+			({
+				id: 'existing-1',
+				name: 'Call',
+				type: 'n8n-nodes-base.httpRequest',
+				typeVersion: 4.2,
+				position: [0, 0],
+				parameters,
+				...(credentials ? { credentials } : {}),
+			}) as unknown as INode;
+		const accessible = [{ id: 'team-cred' }];
+
+		it('rejects a credential the user cannot use when the node did not have it before', () => {
+			const previousVersion = { nodes: [httpNode()] } as unknown as IWorkflowBase;
+			const newVersion = {
+				nodes: [
+					httpNode(
+						{ httpHeaderAuth: { id: 'personal-cred', name: 'Mine' } },
+						{ url: 'https://x.test' },
+					),
+				],
+			} as unknown as IWorkflowBase;
+
+			expect(() =>
+				service.validateWorkflowCredentialUsage(newVersion, previousVersion, accessible),
+			).toThrow(/credentials in the 'Call' node/);
+		});
+
+		it('saves a credential the user can use together with the other edits', () => {
+			const previousVersion = { nodes: [httpNode()] } as unknown as IWorkflowBase;
+			const edited = httpNode(
+				{ httpHeaderAuth: { id: 'team-cred', name: 'Team' } },
+				{ url: 'https://x.test', query: { key: 'value' } },
+			);
+			const newVersion = { nodes: [edited] } as unknown as IWorkflowBase;
+
+			const result = service.validateWorkflowCredentialUsage(
+				newVersion,
+				previousVersion,
+				accessible,
+			);
+
+			expect(result.nodes[0]).toEqual(edited);
+		});
+
+		it('still restores a node whose credential the user could not use before', () => {
+			const previous = httpNode({ httpHeaderAuth: { id: 'foreign-cred', name: 'Theirs' } });
+			const previousVersion = { nodes: [previous] } as unknown as IWorkflowBase;
+			const newVersion = {
+				nodes: [{ ...previous, parameters: { url: 'https://changed.test' } }],
+			} as unknown as IWorkflowBase;
+
+			const result = service.validateWorkflowCredentialUsage(
+				newVersion,
+				previousVersion,
+				accessible,
+			);
+
+			expect(result.nodes[0].parameters).toEqual({ url: '' });
+		});
+
+		it('restores a read-only node whose credential is swapped for another the user cannot use', () => {
+			const previous = httpNode({ httpHeaderAuth: { id: 'foreign-cred', name: 'Theirs' } });
+			const previousVersion = { nodes: [previous] } as unknown as IWorkflowBase;
+			const newVersion = {
+				nodes: [
+					httpNode(
+						{ httpHeaderAuth: { id: 'other-foreign-cred', name: 'Fake' } },
+						{ url: 'https://changed.test' },
+					),
+				],
+			} as unknown as IWorkflowBase;
+
+			const result = service.validateWorkflowCredentialUsage(
+				newVersion,
+				previousVersion,
+				accessible,
+			);
+
+			expect(result.nodes[0]).toEqual(previous);
+		});
+
+		it('saves a read-only node switched to a credential the user can use, with its other edits', () => {
+			const previous = httpNode({ httpHeaderAuth: { id: 'foreign-cred', name: 'Theirs' } });
+			const previousVersion = { nodes: [previous] } as unknown as IWorkflowBase;
+			const switched = httpNode(
+				{ httpHeaderAuth: { id: 'team-cred', name: 'Team' } },
+				{ url: 'https://changed.test' },
+			);
+			const newVersion = { nodes: [switched] } as unknown as IWorkflowBase;
+
+			const result = service.validateWorkflowCredentialUsage(
+				newVersion,
+				previousVersion,
+				accessible,
+			);
+
+			expect(result.nodes[0]).toEqual(switched);
+		});
+
+		it('restores a read-only node whose unresolved credential is replaced', () => {
+			const previous = httpNode({ httpHeaderAuth: { id: null, name: 'Old' } });
+			const previousVersion = { nodes: [previous] } as unknown as IWorkflowBase;
+			const newVersion = {
+				nodes: [httpNode({ httpHeaderAuth: { id: null, name: 'New' } }, { url: 'https://x.test' })],
+			} as unknown as IWorkflowBase;
+
+			const result = service.validateWorkflowCredentialUsage(
+				newVersion,
+				previousVersion,
+				accessible,
+			);
+
+			expect(result.nodes[0]).toEqual(previous);
 		});
 	});
 
@@ -541,10 +748,13 @@ describe('EnterpriseWorkflowService', () => {
 
 			await service.transferWorkflow(user, 'wf-1', 'proj-dest');
 
-			expect(policyEnforcementService.enforceWorkflowTransfer).toHaveBeenCalledExactlyOnceWith({
-				workflow,
-				targetProjectId: destinationProject.id,
-			});
+			expect(policyEnforcementService.enforceWorkflowTransfer).toHaveBeenCalledExactlyOnceWith(
+				{
+					workflow,
+					targetProjectId: destinationProject.id,
+				},
+				{ kind: 'user', user },
+			);
 		});
 
 		it('proceeds with the transfer unchanged when the policy check clears', async () => {

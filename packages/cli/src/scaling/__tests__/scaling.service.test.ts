@@ -181,7 +181,7 @@ describe('ScalingService', () => {
 
 			it('should recheck pending job waits when the Redis connection recovers', async () => {
 				await scalingService.setupQueue();
-				const { RedisClientService } = await import('@/services/redis-client.service.js');
+				const { RedisClientService } = await import('@n8n/backend-services');
 
 				// Completion events sent while the connection was down are lost
 				// The service debounces its emits, so the event lands on the next second
@@ -986,7 +986,9 @@ describe('ScalingService', () => {
 				expect(service.popJobResult('exec-1')).toBeUndefined();
 			});
 		});
+	});
 
+	describe('broadcast results', () => {
 		it('should not store a job-finished result for an execution this process did not enqueue', async () => {
 			const activeExecutions = mock<ActiveExecutions>();
 			activeExecutions.has.mockReturnValue(false);
@@ -1026,6 +1028,56 @@ describe('ScalingService', () => {
 
 			expect(activeExecutions.has).toHaveBeenCalledWith('exec-other-main');
 			expect(scalingService.popJobResult('exec-other-main')).toBeUndefined();
+		});
+	});
+
+	describe('getDiagnosticCounts', () => {
+		it('should report stored job results, queue listeners, and running jobs', async () => {
+			const activeExecutions = mock<ActiveExecutions>();
+			activeExecutions.has.mockReturnValue(true);
+			const outcomeTracker = new JobOutcomeTracker(mockLogger(), activeExecutions, mock(), mock());
+			scalingService = new ScalingService(
+				mockLogger(),
+				mock(),
+				activeExecutions,
+				jobProcessor,
+				globalConfig,
+				mock(),
+				mock(),
+				instanceSettings,
+				mock(),
+				webhookResponseRelay,
+				executionCrashService,
+				outcomeTracker,
+			);
+			await scalingService.setupQueue();
+			queue.eventNames.mockReturnValue(['global:progress', 'global:completed']);
+			queue.listenerCount.mockImplementation((event) => (event === 'global:completed' ? 2 : 1));
+			jobProcessor.getRunningJobIds.mockReturnValue(['job-1']);
+
+			const messageHandler = queue.on.mock.calls.find(
+				([event]) => (event as string) === 'global:progress',
+			)?.[1] as (jobId: JobId, msg: unknown) => void;
+			messageHandler('job-789', {
+				kind: 'job-finished',
+				version: 2,
+				executionId: 'exec-123',
+				workerId: 'worker-456',
+				success: true,
+				status: 'success',
+				startedAt: '2026-07-25T11:59:00.000Z',
+				stoppedAt: '2026-07-25T11:59:30.000Z',
+			});
+
+			expect(scalingService.getDiagnosticCounts()).toEqual({
+				jobResults: 1,
+				queueListeners: 3,
+				runningJobs: 1,
+			});
+
+			scalingService.popJobResult('exec-123');
+
+			expect(scalingService.getDiagnosticCounts().jobResults).toBe(0);
 		});
 	});
 

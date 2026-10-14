@@ -3,6 +3,7 @@ import {
 	InvalidTargetError,
 } from '@modelcontextprotocol/sdk/server/auth/errors.js';
 import { Logger, type LicenseState, type ModuleRegistry } from '@n8n/backend-common';
+import type { EventService, UrlService } from '@n8n/backend-services';
 import { mockInstance } from '@n8n/backend-test-utils';
 import { GlobalConfig } from '@n8n/config';
 import type { User } from '@n8n/db';
@@ -12,12 +13,10 @@ import { mock } from 'vitest-mock-extended';
 
 import { AuthService } from '@/auth/auth.service';
 import type { PostHogClient } from '@/posthog';
-import type { EventService } from '@/events/event.service';
 import { McpProtectedResource } from '@/modules/mcp/mcp-protected-resource';
 import type { McpConfig } from '@/modules/mcp/mcp.config';
 import type { McpSettingsService } from '@/modules/mcp/mcp.settings.service';
 import { ProtectedResourceRegistry } from '@/services/protected-resource.registry';
-import type { UrlService } from '@n8n/backend-services';
 import { UserManagementMailer } from '@/user-management/email';
 
 import type { AuthorizationCode } from '../database/entities/oauth-authorization-code.entity';
@@ -69,6 +68,7 @@ describe('OAuthServerService', () => {
 
 		const resourceRegistry = new ProtectedResourceRegistry(mock<Logger>());
 		resourceRegistry.register({
+			surface: 'instance-mcp',
 			id: 'instance-mcp',
 			getResourceUrl: () => TEST_RESOURCE_URL,
 			getAudiences: () => [TEST_RESOURCE_URL, 'mcp-server-api'],
@@ -174,6 +174,7 @@ describe('OAuthServerService', () => {
 			beforeAll(() => {
 				const registry = new ProtectedResourceRegistry(mock<Logger>());
 				registry.register({
+					surface: 'trigger',
 					id: 'form-abc',
 					isFirstParty: true,
 					displayName: 'My Form',
@@ -186,6 +187,7 @@ describe('OAuthServerService', () => {
 				// A chat trigger's resource: served under the generic webhook base URL rather
 				// than a dedicated endpoint, so it covers the client-id guard's prefix check.
 				registry.register({
+					surface: 'trigger',
 					id: 'chat-abc',
 					isFirstParty: true,
 					displayName: 'My Chat',
@@ -197,6 +199,7 @@ describe('OAuthServerService', () => {
 				});
 				// A resource that exists but is not first-party (mirror of an MCP resource).
 				registry.register({
+					surface: 'trigger',
 					id: 'mcp-x',
 					getResourceUrl: () => NON_FIRST_PARTY_URL,
 					getAudiences: () => [NON_FIRST_PARTY_URL],
@@ -308,6 +311,7 @@ describe('OAuthServerService', () => {
 					resolveByUrl: async (url) =>
 						new URL(url).pathname.replace(/\/$/, '') === '/form/abc'
 							? {
+									surface: 'trigger',
 									id: 'form-abc',
 									isFirstParty: true,
 									getResourceUrl: () => FIRST_PARTY_URL,
@@ -1215,6 +1219,7 @@ describe('OAuthServerService', () => {
 			const formResourceUrl = 'https://n8n.example.com/form/abc';
 			const registry = new ProtectedResourceRegistry(mock<Logger>());
 			registry.register({
+				surface: 'instance-mcp',
 				id: 'instance-mcp',
 				getResourceUrl: () => TEST_RESOURCE_URL,
 				getAudiences: () => [TEST_RESOURCE_URL],
@@ -1223,6 +1228,7 @@ describe('OAuthServerService', () => {
 				authorize: async () => true,
 			});
 			registry.register({
+				surface: 'trigger',
 				id: 'form-abc',
 				getResourceUrl: () => formResourceUrl,
 				getAudiences: () => [formResourceUrl],
@@ -1350,6 +1356,7 @@ describe('OAuthServerService', () => {
 			beforeEach(() => {
 				const registry = new ProtectedResourceRegistry(mock<Logger>());
 				registry.register({
+					surface: 'instance-mcp',
 					id: 'instance-mcp',
 					getResourceUrl: () => TEST_RESOURCE_URL,
 					getAudiences: () => [TEST_RESOURCE_URL],
@@ -1358,6 +1365,7 @@ describe('OAuthServerService', () => {
 					authorize: async () => true,
 				});
 				registry.register({
+					surface: 'instance-mcp',
 					id: 'other-resource',
 					getResourceUrl: () => otherResourceUrl,
 					getAudiences: () => [otherResourceUrl],
@@ -1890,6 +1898,7 @@ describe('OAuthServerService', () => {
 		it('should accept any registered resource and reject unregistered ones', async () => {
 			const multiRegistry = new ProtectedResourceRegistry(mock<Logger>());
 			multiRegistry.register({
+				surface: 'instance-mcp',
 				id: 'instance-mcp',
 				getResourceUrl: () => TEST_RESOURCE_URL,
 				getAudiences: () => [TEST_RESOURCE_URL, 'mcp-server-api'],
@@ -1899,6 +1908,7 @@ describe('OAuthServerService', () => {
 			});
 			const secondResourceUrl = 'https://n8n.example.com/webhook/wf-1/mcp';
 			multiRegistry.register({
+				surface: 'trigger',
 				id: 'workflow-trigger',
 				getResourceUrl: () => secondResourceUrl,
 				getAudiences: () => [secondResourceUrl],

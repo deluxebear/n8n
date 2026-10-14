@@ -3,8 +3,13 @@ import type { Logger } from '@n8n/backend-common';
 import type { GlobalConfig } from '@n8n/config';
 import { type User, type SharedWorkflowRepository, WorkflowEntity } from '@n8n/db';
 import { hasGlobalScope } from '@n8n/permissions';
+import {
+	connectRequiredSubnodeInputs,
+	describeAddedSubnodeConnection,
+	type ClearedSubnodeInput,
+} from '@n8n/workflow-sdk';
 import isEqual from 'lodash/isEqual';
-import type { IWorkflowSettings } from 'n8n-workflow';
+import { NodeConnectionTypes, type IWorkflowSettings } from 'n8n-workflow';
 import { z } from 'zod';
 
 import type { CollaborationService } from '@/collaboration/collaboration.service';
@@ -64,7 +69,7 @@ import {
 } from './workflow-operations';
 import { USER_CALLED_MCP_TOOL_EVENT } from '../../mcp.constants';
 import type { ToolDefinition, UserCalledMCPToolEventPayload } from '../../mcp.types';
-import { getMcpWorkflow } from '../workflow-validation.utils';
+import { getMcpWorkflow, validateMcpWorkflow } from '../workflow-validation.utils';
 
 const MAX_OPERATIONS_PER_CALL = 100;
 
@@ -378,11 +383,13 @@ async function assertErrorWorkflowIsUsable({
 	errorWorkflowId,
 	parentWorkflowId,
 	user,
+	workflowFinderService,
 	errorWorkflowValidationService,
 }: {
 	errorWorkflowId: string | undefined;
 	parentWorkflowId: string;
 	user: User;
+	workflowFinderService: WorkflowFinderService;
 	errorWorkflowValidationService: ErrorWorkflowValidationService;
 }): Promise<void> {
 	// The setting is never evaluated — an expression is used as a literal workflow
@@ -396,6 +403,11 @@ async function assertErrorWorkflowIsUsable({
 
 	const staticId = staticErrorWorkflowId(errorWorkflowId);
 	if (!staticId) return;
+
+	const errorWorkflow = await workflowFinderService.findWorkflowForUser(staticId, user, [
+		'workflow:read',
+	]);
+	if (errorWorkflow) validateMcpWorkflow(errorWorkflow);
 
 	const problem = await errorWorkflowValidationService.findProblem({
 		errorWorkflowId: staticId,
@@ -504,7 +516,12 @@ async function assertWorkflowSettingsValid(
 		settings: IWorkflowSettings | undefined;
 		workflowId: string;
 	},
-	{ user, globalConfig, errorWorkflowValidationService }: WorkflowSettingsGuardDependencies,
+	{
+		user,
+		globalConfig,
+		workflowFinderService,
+		errorWorkflowValidationService,
+	}: WorkflowSettingsGuardDependencies,
 ): Promise<void> {
 	// Validate a freshly-set error workflow so the agent can self-correct in
 	// context: the target must exist, be accessible, and contain an Error
@@ -518,6 +535,7 @@ async function assertWorkflowSettingsValid(
 			errorWorkflowId: settings?.errorWorkflow,
 			parentWorkflowId: workflowId,
 			user,
+			workflowFinderService,
 			errorWorkflowValidationService,
 		});
 	}
@@ -715,6 +733,26 @@ const isTagOperation = (op: PartialUpdateOperation) =>
 	op.type === 'addTags' || op.type === 'removeTags';
 
 const isSettingsOperation = (op: PartialUpdateOperation) => op.type === 'setWorkflowSettings';
+
+/**
+ * Operations that cannot leave a required subnode input unsatisfied: they touch
+ * neither connections nor the parameters a conditional `inputs` expression reads.
+ * Node-level execution settings qualify, since `inputs` only sees `$parameter`.
+ */
+const GRAPH_NEUTRAL_OPERATIONS = new Set<PartialUpdateOperation['type']>([
+	'addTags',
+	'removeTags',
+	'setNodeSettings',
+	'setWorkflowSettings',
+	'setWorkflowMetadata',
+	'addNodeGroup',
+	'removeNodeGroup',
+	'updateNodeGroup',
+	'setNodeGroups',
+	'setNodePosition',
+]);
+
+const touchesGraph = (op: PartialUpdateOperation) => !GRAPH_NEUTRAL_OPERATIONS.has(op.type);
 
 /**
  * Rejects operations this instance cannot serve, before anything is loaded or
@@ -1147,6 +1185,29 @@ export const createUpdateWorkflowTool = (
 					throw new Error(result.error);
 				}
 
+				// Setting a parameter can make a subnode input required without wiring it.
+				// Skip inputs this batch disconnected, or removeConnection is a no-op.
+				// Names are carried through later renames, since the pass runs against
+				// the final graph.
+				const clearedInputs: ClearedSubnodeInput[] = [];
+				for (const op of strictOperations) {
+					if (op.type === 'removeConnection') {
+						clearedInputs.push({
+							nodeName: op.target,
+							connectionType: op.connectionType ?? NodeConnectionTypes.Main,
+						});
+					} else if (op.type === 'renameNode') {
+						for (const cleared of clearedInputs) {
+							if (cleared.nodeName === op.oldName) cleared.nodeName = op.newName;
+						}
+					}
+				}
+				// A tag, settings or layout edit cannot create an unsatisfied input, and
+				// wiring one off the back of such an update would be a surprise.
+				const addedSubnodeLinks = strictOperations.some(touchesGraph)
+					? connectRequiredSubnodeInputs(result.workflow, nodeTypes, { clearedInputs })
+					: [];
+
 				const { skippedOperations, removedGroups, nodeGroupsNeedPersisting } =
 					resolveNodeGroupViolations(result, nodeTypes);
 
@@ -1234,6 +1295,10 @@ export const createUpdateWorkflowTool = (
 					existingWorkflow,
 					nodeTypes,
 				);
+
+				for (const link of addedSubnodeLinks) {
+					validationWarnings.push(describeAddedSubnodeConnection(link));
+				}
 
 				validationWarnings.push(
 					...(await buildUninstalledNodeWarnings(

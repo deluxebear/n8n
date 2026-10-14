@@ -78,7 +78,7 @@ jobs:
           build-command: 'pnpm build'
 
       - name: Install Browsers
-        working-directory: packages/testing/playwright
+        working-directory: packages/quality/testing/playwright
         run: pnpm exec playwright install chromium
 
       - name: Install Helm
@@ -110,7 +110,7 @@ jobs:
           echo "KUBECONFIG=${KUBECONFIG_PATH}" >> "$GITHUB_ENV"
 
       - name: Run Building Blocks E2E Tests
-        working-directory: packages/testing/playwright
+        working-directory: packages/quality/testing/playwright
         run: |
           N8N_BASE_URL="${{ env.N8N_BASE_URL }}" \
           RESET_E2E_DB=true \
@@ -145,8 +145,8 @@ jobs:
         with:
           name: helm-e2e-report-${{ inputs.mode || 'queue' }}
           path: |
-            packages/testing/playwright/test-results/
-            packages/testing/playwright/playwright-report/
+            packages/quality/testing/playwright/test-results/
+            packages/quality/testing/playwright/playwright-report/
           retention-days: 7
 
   cleanup-ghcr:

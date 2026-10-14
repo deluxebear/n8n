@@ -149,6 +149,7 @@ import { useActivityDetection } from '@/app/composables/useActivityDetection';
 import { useCollaborationStore } from '@/features/collaboration/collaboration/collaboration.store';
 import { useInjectWorkflowId } from '@/app/composables/useInjectWorkflowId';
 import { injectWorkflowDocumentStore } from '@/app/stores/workflowDocument.store';
+import { useUnusableWorkflowCredentials } from '@/features/credentials/composables/useUnusableWorkflowCredentials';
 
 import {
 	N8nCallout,
@@ -500,12 +501,6 @@ const allTriggerNodesDisabled = computed(() => {
 const selectableTriggerNodes = computed(() =>
 	triggerNodes.value.filter((node) => !node.disabled && !isChatNode(node)),
 );
-const isRunButtonSplit = computed(() => {
-	return (
-		selectableTriggerNodes.value.length > 1 &&
-		workflowExecutionState.value.selectedTriggerNodeName !== undefined
-	);
-});
 
 function onTidyUp(
 	event: CanvasLayoutEvent,
@@ -1279,7 +1274,27 @@ const isExecutionWaitingForWebhook = computed(
 	() => workflowExecutionState.value.executionWaitingForWebhook,
 );
 
+const { reason: unusableCredentialReason } = useUnusableWorkflowCredentials(
+	() => workflowDocumentStore.value.usedCredentials,
+	() => workflowDocumentStore.value.allNodes,
+);
+
+function onRunWorkflowShortcut() {
+	if (unusableCredentialReason.value) {
+		toast.showMessage({ title: unusableCredentialReason.value, type: 'warning' });
+		return;
+	}
+
+	void runEntireWorkflow('main');
+}
+
 const isExecutionDisabled = computed(() => {
+	// A run is checked against the person it acts as, so a credential this user
+	// cannot use stops the workflow.
+	if (unusableCredentialReason.value) {
+		return true;
+	}
+
 	if (
 		containsChatTriggerNodes.value &&
 		isOnlyChatTriggerNodeActive.value &&
@@ -2205,7 +2220,7 @@ onBeforeUnmount(() => {
 			@copy:nodes="onCopyNodes"
 			@cut:nodes="onCutNodes"
 			@replace:node="onClickReplaceNode"
-			@run:workflow="runEntireWorkflow('main')"
+			@run:workflow="onRunWorkflowShortcut"
 			@save:workflow="onSaveWorkflow"
 			@create:workflow="onCreateWorkflow"
 			@viewport:change="onViewportChange"
@@ -2237,53 +2252,54 @@ onBeforeUnmount(() => {
 				v-if="!isCanvasReadOnly"
 				:class="$style.evaluationsCanvasInfoCardWrapper"
 			/>
-			<div v-if="!isCanvasReadOnly || canExecuteOnCanvas" :class="$style.executionButtons">
-				<CanvasRunWorkflowButton
-					v-if="isRunWorkflowButtonVisible"
-					:waiting-for-webhook="isExecutionWaitingForWebhook"
-					:disabled="isExecutionDisabled"
-					:executing="isWorkflowRunning"
-					:trigger-nodes="triggerNodes"
-					:get-node-type="nodeTypesStore.getNodeType"
-					:selected-trigger-node-name="workflowExecutionState.selectedTriggerNodeName"
-					:type="runWorkflowButtonType"
-					@mouseenter="onRunWorkflowButtonMouseEnter"
-					@mouseleave="onRunWorkflowButtonMouseLeave"
-					@execute="runEntireWorkflow('main')"
-					@select-trigger-node="workflowExecutionState.setSelectedTriggerNodeName"
-				/>
-				<template v-if="containsChatTriggerNodes">
-					<CanvasChatButton
-						v-if="isChatHubAvailable ? isChatHubPanelOpen : isLogsPanelOpen"
-						variant="subtle"
-						:label="i18n.baseText('chat.hide')"
-						:class="$style.chatButton"
-						@click="onToggleChat"
+			<div v-if="!isCanvasReadOnly || canExecuteOnCanvas" :class="$style.executionButtonsContainer">
+				<div :class="$style.executionButtons">
+					<CanvasRunWorkflowButton
+						v-if="isRunWorkflowButtonVisible"
+						:disabled-reason="unusableCredentialReason"
+						:waiting-for-webhook="isExecutionWaitingForWebhook"
+						:disabled="isExecutionDisabled"
+						:executing="isWorkflowRunning"
+						:trigger-nodes="triggerNodes"
+						:get-node-type="nodeTypesStore.getNodeType"
+						:selected-trigger-node-name="workflowExecutionState.selectedTriggerNodeName"
+						:type="runWorkflowButtonType"
+						@mouseenter="onRunWorkflowButtonMouseEnter"
+						@mouseleave="onRunWorkflowButtonMouseLeave"
+						@execute="runEntireWorkflow('main')"
+						@select-trigger-node="workflowExecutionState.setSelectedTriggerNodeName"
 					/>
-					<KeyboardShortcutTooltip
-						v-else
-						:label="i18n.baseText('chat.open')"
-						:shortcut="{ keys: ['c'] }"
-					>
+					<template v-if="containsChatTriggerNodes">
 						<CanvasChatButton
-							:variant="isRunWorkflowButtonVisible ? 'subtle' : 'solid'"
-							:label="i18n.baseText('chat.open')"
+							v-if="isChatHubAvailable ? isChatHubPanelOpen : isLogsPanelOpen"
+							variant="subtle"
+							:label="i18n.baseText('chat.hide')"
 							:class="$style.chatButton"
-							@click="onOpenChat"
+							@click="onToggleChat"
 						/>
-					</KeyboardShortcutTooltip>
-				</template>
-				<CanvasStopCurrentExecutionButton
-					v-if="isStopExecutionButtonVisible"
-					:stopping="isStoppingExecution"
-					:size="isRunButtonSplit ? 'xlarge' : 'large'"
-					@click="onStopExecution"
-				/>
-				<CanvasStopWaitingForWebhookButton
-					v-if="isStopWaitingForWebhookButtonVisible"
-					:size="isRunButtonSplit ? 'xlarge' : 'large'"
-					@click="onStopWaitingForWebhook"
-				/>
+						<KeyboardShortcutTooltip
+							v-else
+							:label="i18n.baseText('chat.open')"
+							:shortcut="{ keys: ['c'] }"
+						>
+							<CanvasChatButton
+								:variant="isRunWorkflowButtonVisible ? 'subtle' : 'solid'"
+								:label="i18n.baseText('chat.open')"
+								:class="$style.chatButton"
+								@click="onOpenChat"
+							/>
+						</KeyboardShortcutTooltip>
+					</template>
+					<CanvasStopCurrentExecutionButton
+						v-if="isStopExecutionButtonVisible"
+						:stopping="isStoppingExecution"
+						@click="onStopExecution"
+					/>
+					<CanvasStopWaitingForWebhookButton
+						v-if="isStopWaitingForWebhookButtonVisible"
+						@click="onStopWaitingForWebhook"
+					/>
+				</div>
 			</div>
 
 			<N8nCallout
@@ -2354,8 +2370,16 @@ onBeforeUnmount(() => {
 	width: 100%;
 }
 
+.executionButtonsContainer {
+	position: absolute;
+	inset: 0;
+	container-type: inline-size;
+	pointer-events: none;
+}
+
 .executionButtons {
 	position: absolute;
+	pointer-events: auto;
 	display: flex;
 	justify-content: center;
 	align-items: center;
@@ -2366,6 +2390,12 @@ onBeforeUnmount(() => {
 	width: auto;
 
 	@include breakpoints.breakpoint('sm-only') {
+		left: auto;
+		right: var(--spacing--sm);
+		transform: none;
+	}
+
+	@container (max-width: #{var.$sm - 1}) {
 		left: auto;
 		right: var(--spacing--sm);
 		transform: none;

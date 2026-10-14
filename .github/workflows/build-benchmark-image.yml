@@ -25,7 +25,7 @@ jobs:
           DOCKER_BUILD_SUMMARY: false
         with:
           context: .
-          file: ./packages/@n8n/benchmark/Dockerfile
+          file: ./packages/quality/efficiency/scale/benchmark/Dockerfile
           platforms: linux/amd64
           provenance: false
           push: true

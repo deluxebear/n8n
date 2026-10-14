@@ -18,7 +18,7 @@ export class TaskRunnerInternalModeRule implements IBreakingChangeInstanceRule {
 			description:
 				'Task runners can no longer run as a child process of n8n. The new version only supports N8N_RUNNERS_MODE=external and fails to start Code node executions when no external task runner connects.',
 			category: BreakingChangeCategory.infrastructure,
-			severity: 'medium',
+			impact: 'executionsFail',
 			documentationUrl: 'https://docs.n8n.io/deploy/host-n8n/configure-n8n/set-up-task-runners',
 		};
 	}

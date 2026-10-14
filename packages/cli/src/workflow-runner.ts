@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-unsafe-argument */
 
 import { Logger } from '@n8n/backend-common';
+import { EventService } from '@n8n/backend-services';
 import { ExecutionsConfig } from '@n8n/config';
 import { Time } from '@n8n/constants';
 import { ExecutionRepository } from '@n8n/db';
@@ -38,8 +39,6 @@ import {
 } from 'n8n-workflow';
 import PCancelable from 'p-cancelable';
 
-import { EventService } from './events/event.service';
-
 import { ActiveExecutions } from '@/active-executions';
 import { ExecutionNotFoundError } from '@/errors/execution-not-found-error';
 import { MaxStalledCountError } from '@/errors/max-stalled-count.error';
@@ -68,14 +67,9 @@ import type { PoolConfigService } from '@/scaling/pool-config.service.ee';
 import type { ScalingService } from '@/scaling/scaling.service';
 import type { Job, JobData } from '@/scaling/scaling.types';
 import { EngineV2Dispatcher } from '@/services/engine-v2-dispatcher.service';
+import { StreamingWebhookResponseHeartbeat } from '@/webhooks/streaming-webhook-response-heartbeat';
 import * as WorkflowExecuteAdditionalData from '@/workflow-execute-additional-data';
 import { WorkflowStaticDataService } from '@/workflows/workflow-static-data.service';
-
-/** Interval between keepalive writes on streaming responses to prevent proxy timeouts */
-const STREAMING_HEARTBEAT_INTERVAL_MS = 30_000;
-
-/** JSON chunk written periodically to keep the streaming connection alive through reverse proxies */
-const STREAMING_KEEPALIVE_CHUNK = '{"type":"keepalive"}\n';
 
 /** How long to keep rechecking the execution status after a max-stalled-count error before failing the run */
 const MAX_STALLED_COUNT_GRACE_WINDOW_MS = 30 * Time.seconds.toMilliseconds;
@@ -189,6 +183,7 @@ export class WorkflowRunner {
 
 						if (fullExecutionData?.data) {
 							storedRunData = {
+								// oxlint-disable-next-line typescript/no-deprecated
 								finished: fullExecutionData.finished,
 								mode: fullExecutionData.mode,
 								startedAt: fullExecutionData.startedAt,
@@ -456,20 +451,9 @@ export class WorkflowRunner {
 		if (responsePromise) {
 			this.activeExecutions.attachResponsePromise(executionId, responsePromise);
 		}
-
-		// Set up streaming heartbeat on the main process that holds the HTTP response.
-		// This must happen BEFORE the queue/local decision because in queue mode the
-		// execution runs on a worker process that has no access to the HTTP response.
-		let heartbeatInterval: NodeJS.Timeout | undefined;
-		if (data.streamingEnabled === true && data.httpResponse) {
-			const res = data.httpResponse;
-			heartbeatInterval = setInterval(() => {
-				if (!res.writableEnded) {
-					res.write(STREAMING_KEEPALIVE_CHUNK);
-					flushResponse(res);
-				}
-			}, STREAMING_HEARTBEAT_INTERVAL_MS);
-		}
+		// The v1 main process owns the HTTP response. Start this before the
+		// queue/local decision because a worker cannot write to it.
+		const heartbeat = this.setupV1StreamingHeartbeat(data);
 
 		// @TODO: Reduce to true branch once feature is stable
 		const shouldEnqueue =
@@ -485,7 +469,7 @@ export class WorkflowRunner {
 					executionId,
 					workflowId,
 					data,
-					shouldReloadStaticData,
+					loadStaticData,
 					realtime,
 					existingExecution?.executionId,
 				);
@@ -501,7 +485,7 @@ export class WorkflowRunner {
 		} catch (error) {
 			// A failed start means the post-execute promise that normally clears the
 			// heartbeat never settles, so clear it here.
-			if (heartbeatInterval) clearInterval(heartbeatInterval);
+			heartbeat?.stop();
 			throw error;
 		}
 
@@ -531,14 +515,21 @@ export class WorkflowRunner {
 		}
 
 		// Clean up the streaming heartbeat when the execution finishes
-		if (heartbeatInterval) {
+		if (heartbeat) {
 			const postExecutePromise = this.activeExecutions.getPostExecutePromise(executionId);
 			void postExecutePromise.finally(() => {
-				clearInterval(heartbeatInterval);
+				heartbeat.stop();
 			});
 		}
 
 		return executionId;
+	}
+
+	private setupV1StreamingHeartbeat(
+		data: IWorkflowExecutionDataProcess,
+	): StreamingWebhookResponseHeartbeat | undefined {
+		if (data.streamingEnabled !== true || !data.httpResponse) return undefined;
+		return new StreamingWebhookResponseHeartbeat(data.httpResponse);
 	}
 
 	private resolvePinData(data: IWorkflowExecutionDataProcess): IPinData | undefined {
@@ -705,6 +696,7 @@ export class WorkflowRunner {
 				.then((fullRunData) => {
 					clearTimeout(executionTimeout);
 					if (workflowExecution.isCanceled) {
+						// oxlint-disable-next-line typescript/no-deprecated
 						fullRunData.finished = false;
 					}
 
@@ -771,6 +763,7 @@ export class WorkflowRunner {
 				loadStaticData: !!loadStaticData,
 				pushRef: data.pushRef,
 				streamingEnabled: data.streamingEnabled,
+				callerAwaitsOutcome: data.callerAwaitsOutcome,
 				restartExecutionId,
 				projectId: data.projectId,
 				projectName: data.projectName,
@@ -906,6 +899,7 @@ export class WorkflowRunner {
 					}
 
 					runData = {
+						// oxlint-disable-next-line typescript/no-deprecated
 						finished: fullExecutionData.finished,
 						mode: fullExecutionData.mode,
 						startedAt: fullExecutionData.startedAt,
@@ -953,7 +947,9 @@ export class WorkflowRunner {
 			// So we're just preventing crashes here.
 		});
 
-		this.activeExecutions.attachWorkflowExecution(executionId, workflowExecution);
+		this.activeExecutions.attachWorkflowExecution(executionId, workflowExecution, {
+			isQueueJob: true,
+		});
 	}
 
 	/**

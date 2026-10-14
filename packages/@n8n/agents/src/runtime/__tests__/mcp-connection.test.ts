@@ -585,3 +585,15 @@ describe('McpConnection — reconnect after disconnect', () => {
 		expect(clientClose).toHaveBeenCalledTimes(2);
 	});
 });
+
+describe('McpConnection — approval declaration', () => {
+	it('declares approval when tool configuration is resolved after discovery', () => {
+		const conn = new McpConnection({
+			name: 's1',
+			url: 'https://example.test/mcp',
+			configureTools: () => ({ requireApproval: [] }),
+		});
+
+		expect(conn.declaresApproval()).toBe(true);
+	});
+});
