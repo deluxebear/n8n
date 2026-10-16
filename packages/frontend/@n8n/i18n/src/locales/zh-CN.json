@@ -10119,5 +10119,6 @@
 	"agents.channels.teams.settings.updateNoticeChanged": "保存会下载新包。将其上传到 Teams 中以应用更改。",
 	"agents.channels.teams.settings.availabilityLabel": "在哪里工作",
 	"agents.channels.teams.settings.identityLabel": "在 Teams 中的显示信息",
-	"agents.channels.teams.settings.saveAndDownload": "保存并下载包"
+	"agents.channels.teams.settings.saveAndDownload": "保存并下载包",
+	"chatHub.toolsManager.roleBlocked": "您的角色无法使用此工具。删除它，或向管理员询问不同的角色。"
 }
