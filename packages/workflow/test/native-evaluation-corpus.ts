@@ -177,7 +177,6 @@ export const HANDLED_CORPUS: string[] = [
 	"={{ $('Source').all().length }}",
 	"={{ $('Source').all()[0].json.item.name }}",
 	"={{ $('Source').item.json.item.missing ?? 'fallback' }}",
-	"={{ $('Source').first()?.json.item.name }}",
 	"=Name: {{ $('Source').item.json.item.name }}",
 	'={{ $node["Source"].json["item"]["name"] }}',
 	"={{ $node['Source'].json.item.count }}",
@@ -330,9 +329,25 @@ export const DECLINED_CORPUS: string[] = [
 	'={{ $input.first().json.item.names.first() }}',
 	"={{ $('__proto__').item.json }}",
 	'={{ $node.constructor.json }}',
-	// Roots outside the data set.
+	// Roots outside the data set, and the time roots outside their allowlists.
 	'={{ $now }}',
 	'={{ $today }}',
+	'={{ [$now] }}',
+	'={{ $json.item.count + $now }}',
+	'={{ $now.toISO({ suppressMilliseconds: true }) }}',
+	'={{ $now.toFormat("yyyy") }}',
+	'={{ $now.toLocaleString() }}',
+	'={{ $now.zoneName }}',
+	'={{ $now.setZone("UTC").toISO() }}',
+	'={{ $now.plus(1, "day").toISO() }}',
+	'={{ $now.minus({ days: 1 }).toISO() }}',
+	'={{ $now.isWeekend() }}',
+	'={{ $now.format("yyyy") }}',
+	'={{ $now.c.year }}',
+	'={{ $now.constructor.name }}',
+	'={{ $now["__proto__"].year }}',
+	'={{ $json.item.names.map($now => $now.toMillis()) }}',
+	'={{ $json.item.names.map($today => 1) }}',
 	'={{ $env.HOME }}',
 	'={{ $execution.id }}',
 	'={{ $prevNode.name }}',
@@ -412,6 +427,11 @@ export const DECLINED_CORPUS: string[] = [
 	'={{ $json.item. }}',
 	// Deep enough to overflow the recursive re-parse: declined, never thrown.
 	`={{ $json${'.a'.repeat(5000)} }}`,
+	// Once any chunk holds an extension call, `first()` included, the rewrite
+	// reprints every optional chain and drops the parentheses around `??`.
+	'={{ $json.item.names?.[9] ?? ($input.first() && 1) }}',
+	"={{ $('Source').first()?.json.item.name }}",
+	'={{ ($json.item.names[9] && $json.item.name) ?? $json.item.names?.[9] }} / {{ $input.first().json.item.name }}',
 ];
 
 // Both paths must throw the same error.
@@ -438,8 +458,43 @@ export const ENGINE_DECIDED_CORPUS: string[] = [
 	'={{ $json.item.valueOf }}',
 ];
 
+// Handled natively, compared to the engine with a clock tolerance: each side
+// reads its own `DateTime.now()`.
+export const TIME_CORPUS: string[] = [
+	'={{ $now.toMillis() }}',
+	'={{ $now.toSeconds() }}',
+	'={{ $now.toUnixInteger() }}',
+	'={{ $now.toISO() }}',
+	'={{ $now.toISODate() }}',
+	'={{ $now.toISOTime() }}',
+	'={{ $now.toString() }}',
+	'={{ $now?.toMillis() }}',
+	'={{ $now.toMillis?.() }}',
+	'={{ $now.toMillis() - 60000 }}',
+	'={{ $now.toISO().slice(0, 10) }}',
+	'={{ $now.year }}',
+	'={{ $now.month }}',
+	'={{ $now.day }}',
+	'={{ $now.hour }}',
+	'={{ $now.weekday }}',
+	'={{ $now.weekNumber }}',
+	'={{ $now.quarter }}',
+	'={{ $now.daysInMonth }}',
+	'={{ $now.offset }}',
+	'={{ $now?.year }}',
+	'={{ $now["year"] }}',
+	'={{ $today.toMillis() }}',
+	'={{ $today.toISODate() }}',
+	'={{ $today.toISO() }}',
+	'={{ $today.year }}',
+	'={{ $today.weekday > 5 ? "weekend" : "weekday" }}',
+	'={{ $today.toMillis() < $now.toMillis() }}',
+	'=since {{ $today.toISODate() }}',
+];
+
 export const ALL_CORPORA: string[] = [
 	...HANDLED_CORPUS,
+	...TIME_CORPUS,
 	...RUNTIME_BAILOUT_CORPUS,
 	...DECLINED_CORPUS,
 	...ERROR_CORPUS,

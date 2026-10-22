@@ -12,11 +12,15 @@ import {
 	NODE_REF_MEMBERS,
 	NODE_REF_METHODS,
 	RESERVED_NAMES,
+	TIME_MEMBERS,
+	TIME_METHODS,
+	TIME_ROOTS,
 	UNARY_OPS,
 	isOneOf,
 	type Literal,
 	type SimpleNode,
 } from './grammar';
+import { isExpressionExtension } from '../../extensions/expression-extension';
 import { isSafeObjectProperty } from '../../utils';
 
 // ── Parsing: esprima output → the subset grammar, or null. ────────────────
@@ -141,6 +145,16 @@ function parseNodeRef(node: AstNode): NodeRef | null {
 	return null;
 }
 
+type TimeRef = Extract<SimpleNode, { kind: 'timeRoot' }>;
+
+// `$now` or `$today` in object/receiver position. As with parseNodeRef, only
+// the member and call parsers ask, so the DateTime never stands alone.
+function parseTimeRoot(node: AstNode): TimeRef | null {
+	if (node.type !== 'Identifier' || !isOneOf(TIME_ROOTS, node.name)) return null;
+
+	return { kind: 'timeRoot', name: node.name };
+}
+
 // Only static keys are representable. Dynamic keys ($json[$json.key]) need
 // the sandbox's PrototypeSanitizer, so they stay on the engine. String keys
 // are vetted at parse time (isSafeObjectProperty), which keeps prototype
@@ -158,6 +172,13 @@ function parseMember(node: namedTypes.MemberExpression, parse: ParseChild): Simp
 		if (typeof key !== 'string' || !allowed.has(key)) return null;
 
 		return { kind: 'member', object: ref, key, optional: node.optional === true };
+	}
+
+	const time = parseTimeRoot(node.object);
+	if (time !== null) {
+		if (typeof key !== 'string' || !TIME_MEMBERS.has(key)) return null;
+
+		return { kind: 'member', object: time, key, optional: node.optional === true };
 	}
 
 	const object = parse(node.object);
@@ -242,6 +263,16 @@ function parseCall(
 		return { kind: 'call', receiver: ref, method: property.name, args: [], optional };
 	}
 
+	// `$now.toMillis()` and friends: Luxon's own primitive-returning methods,
+	// no arguments.
+	const time = parseTimeRoot(callee.object);
+	if (time !== null) {
+		if (!TIME_METHODS.has(property.name) || node.arguments.length > 0) return null;
+
+		const optional = node.optional === true || callee.optional === true;
+		return { kind: 'call', receiver: time, method: property.name, args: [], optional };
+	}
+
 	const method = property.name;
 	const isIterator = isOneOf(ITERATOR_METHODS, method);
 	if (!isIterator && !CALLABLE_METHODS.has(method)) return null;
@@ -279,6 +310,60 @@ function parseChain(node: namedTypes.ChainExpression, parse: ParseChild): Simple
 	if (expression === null) return null;
 
 	return { kind: 'chain', expression };
+}
+
+/**
+ * Once a chunk holds an extension call, extendTransform rewrites every
+ * optional chain in it through its own polyfill, and that reprint drops the
+ * parentheses around a `??` operand mixed with `&&` or `||`: the engines
+ * then throw "invalid syntax" where this interpreter would evaluate. An
+ * extension call in any chunk sends every chunk through the rewrite, so an
+ * expression with both an optional chain and an extension call is theirs,
+ * even when the two are in different chunks. The rewrite matches by method
+ * name alone, so a node-ref call like `$input.first()` counts too.
+ */
+export function usesPolyfilledChain(roots: SimpleNode[]): boolean {
+	let chain = false;
+	let extension = false;
+	const visit = (node: SimpleNode): void => {
+		switch (node.kind) {
+			case 'chain':
+				chain = true;
+				visit(node.expression);
+				return;
+			case 'call':
+				if (isExpressionExtension(node.method)) {
+					extension = true;
+				}
+				visit(node.receiver);
+				node.args.forEach(visit);
+				return;
+			case 'iterate':
+				visit(node.receiver);
+				visit(node.body);
+				return;
+			case 'member':
+				visit(node.object);
+				return;
+			case 'unary':
+				visit(node.argument);
+				return;
+			case 'binary':
+			case 'logical':
+				visit(node.left);
+				visit(node.right);
+				return;
+			case 'conditional':
+				visit(node.test);
+				visit(node.consequent);
+				visit(node.alternate);
+				return;
+			default:
+				return;
+		}
+	};
+	roots.forEach(visit);
+	return chain && extension;
 }
 
 function parseBranches(

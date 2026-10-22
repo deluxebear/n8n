@@ -2,11 +2,13 @@
 
 import * as Helpers from './helpers';
 import { createRunExecutionData } from '../src';
+import type { IWorkflowDataProxyData } from '../src/interfaces';
 import { ExpressionExtensions } from '../src/extensions';
 import {
 	evaluateNatively,
 	isNativelyEvaluable,
 	CALLABLE_METHODS,
+	TIME_METHODS,
 	ITERATOR_METHODS,
 	MAX_RESULT_LENGTH,
 	MAX_STEPS,
@@ -22,6 +24,7 @@ import {
 	ERROR_CORPUS,
 	HANDLED_CORPUS,
 	RUNTIME_BAILOUT_CORPUS,
+	TIME_CORPUS,
 } from './native-evaluation-corpus';
 
 // The expression corpora live in native-evaluation-corpus.ts.
@@ -205,6 +208,54 @@ describe('Expression - fast native evaluation parity', () => {
 		});
 	});
 
+	// Each side reads its own clock, so the values are compared as instants
+	// within a minute of each other; everything else must match exactly.
+	describe('time root expressions match the engine result', () => {
+		const asInstant = (value: unknown): number | null => {
+			if (typeof value === 'number') return value;
+			if (typeof value !== 'string') return null;
+
+			const instant = DateTime.fromISO(value.replace(/^since /, ''));
+			return instant.isValid ? instant.toMillis() : null;
+		};
+
+		test.each(TIME_CORPUS)('%s', (expr) => {
+			expect(isNativelyEvaluable(expr.slice(1))).toBe(true);
+			expect(nativeOutcome(expr).handled).toBe(true);
+
+			const engineResult = evaluate(expr, false);
+			const nativeResult = evaluate(expr, true);
+			expect(typeof nativeResult).toBe(typeof engineResult);
+
+			const engineInstant = asInstant(engineResult);
+			const nativeInstant = asInstant(nativeResult);
+			if (engineInstant === null || nativeInstant === null) {
+				expect(nativeResult).toStrictEqual(engineResult);
+				return;
+			}
+
+			// Milliseconds, seconds (toSeconds, toUnixInteger), or a calendar
+			// getter, which must match exactly.
+			const tolerance = engineInstant > 1e11 ? 60_000 : engineInstant > 1e8 ? 60 : 0;
+			expect(Math.abs(nativeInstant - engineInstant)).toBeLessThanOrEqual(tolerance);
+		});
+
+		test('a time root that is not a Luxon DateTime hands off to the engine', () => {
+			const dataWith = (value: unknown) => ({ $now: value }) as unknown as IWorkflowDataProxyData;
+
+			expect(evaluateNatively('{{ $now.toMillis() }}', dataWith(new Date()))).toEqual({
+				handled: false,
+			});
+			expect(evaluateNatively('{{ $now.year }}', dataWith({ year: 2026 }))).toEqual({
+				handled: false,
+			});
+			expect(evaluateNatively('{{ $now.year }}', dataWith(DateTime.now()))).toEqual({
+				handled: true,
+				value: DateTime.now().year,
+			});
+		});
+	});
+
 	describe('non-simple expressions are declined', () => {
 		test.each(DECLINED_CORPUS)('%s', (expr) => {
 			expect(isNativelyEvaluable(expr.slice(1))).toBe(false);
@@ -292,8 +343,7 @@ describe('Expression - fast native evaluation parity', () => {
 
 	// Values no node should produce (the engine does not enforce that yet) and
 	// inherited members on the root. Native either matches the configured
-	// engine or hands the expression to it; the one remaining divergence is
-	// the DateTime copy under legacy, pinned so a change is visible.
+	// engine or hands the expression to it.
 	describe('non-JSON values and inherited members', () => {
 		const exotic = {
 			json: {
@@ -325,22 +375,47 @@ describe('Expression - fast native evaluation parity', () => {
 			}
 		});
 
-		test('a whole-value DateTime read is a copy natively; legacy returns the instance', () => {
-			const legacy = isLegacy();
-			const native = evaluateExotic('={{ $json.item.dt }}', true);
-			const viaEngine = evaluateExotic('={{ $json.item.dt }}', false);
-			expect(native).not.toBeInstanceOf(DateTime);
-			expect(viaEngine instanceof DateTime).toBe(legacy);
-			// Both copies carry the instant; their cloned Luxon internals (locale
-			// and zone caches) depend on the host environment, so compare only
-			// what the expression author can observe.
-			expect((native as { ts: number }).ts).toBe((viaEngine as { ts: number }).ts);
-			// Member reads keep working on both paths.
-			expect(evaluateExotic('={{ $json.item.dt.year }}', true)).toBe(2026);
+		test('a whole-value DateTime read hands off to the engine', () => {
+			expect(nativeOutcome('={{ $json.item.my_object }}').handled).toBe(true);
+			const data = { $json: exotic.json } as never;
+			expect(evaluateNatively('{{ $json.item.dt }}', data)).toEqual({ handled: false });
+		});
+
+		// The vm and quickjs serialiser drops an own `__proto__` key; legacy
+		// keeps it. Native hands the copy to the engine, whichever it is.
+		test('an own __proto__ key on a whole-value read hands off to the engine', () => {
+			const payload = { json: { item: JSON.parse('{"__proto__":1,"safe":2}') as object } };
+			const data = runDataFor([payload as never]);
+			const run = (native: boolean) =>
+				evaluate('={{ $json.item }}', native, data, [payload as never]) as object;
+			expect(evaluateNatively('{{ $json.item }}', { $json: payload.json } as never)).toEqual({
+				handled: false,
+			});
+			expect(run(true)).toStrictEqual(run(false));
+			expect(Object.keys(run(true)).includes('__proto__')).toBe(isLegacy());
 		});
 	});
 
 	describe('structural guards', () => {
+		test('a whole-value read of shared, cyclic, long sparse or non-plain array data hands off to the engine', () => {
+			const shared: Record<string, unknown> = { leaf: 1 };
+			let fanOut = shared;
+			for (let level = 0; level < 30; level++) fanOut = { a: fanOut, b: fanOut };
+			const cyclic: Record<string, unknown> = {};
+			cyclic.a = cyclic;
+			cyclic.b = cyclic;
+			const sparse: unknown[] = [];
+			sparse[MAX_RESULT_LENGTH] = 1;
+			class SubArray extends Array<number> {}
+			const subclassed = SubArray.from([1]);
+
+			for (const item of [fanOut, cyclic, sparse, subclassed]) {
+				expect(evaluateNatively('{{ $json.item }}', { $json: { item } } as never)).toEqual({
+					handled: false,
+				});
+			}
+		});
+
 		// Direct calls: the data shapes here cannot come out of a node, so the
 		// engines have nothing to agree with.
 		const nativeOn = (expr: string, data: Record<string, unknown>) => {
@@ -381,6 +456,28 @@ describe('Expression - fast native evaluation parity', () => {
 			expect(nativeOn('{{ $json.rows.at(0).length }}', rows)).toEqual({
 				handled: true,
 				value: 600_000,
+			});
+		});
+
+		// Few elements, much content: an element count would charge almost
+		// nothing for work that compares or stringifies every character.
+		test('element-comparing methods are charged by element content', () => {
+			const big = 'x'.repeat(MAX_RESULT_LENGTH);
+			const fits = MAX_WORK / MAX_RESULT_LENGTH - 1;
+			const list = (count: number) => ({ $json: { list: new Array<string>(count).fill(big) } });
+			for (const method of ['includes', 'indexOf', 'lastIndexOf']) {
+				const expr = `{{ $json.list.${method}("y") }}`;
+				expect(nativeOn(expr, list(fits + 2))).toEqual({ handled: false });
+				expect(nativeOn(expr, list(fits)).handled).toBe(true);
+			}
+			// Twice the content times log2 of the count: 3 elements cost 12
+			// receivers, 2 cost 8.
+			expect(nativeOn('{{ $json.list.toSorted().length }}', list(3))).toEqual({
+				handled: false,
+			});
+			expect(nativeOn('{{ $json.list.toSorted().length }}', list(2))).toEqual({
+				handled: true,
+				value: 2,
 			});
 		});
 
@@ -428,9 +525,10 @@ describe('Expression - fast native evaluation parity', () => {
 			expect(nativeOn('{{ $json.rows.flat() }}', { $json: { rows: [big, big] } })).toEqual({
 				handled: false,
 			});
-			expect(nativeOn('{{ $json.rows.flat(0) }}', { $json: { rows: [big, big] } }).handled).toBe(
-				true,
-			);
+			expect(nativeOn('{{ $json.rows.flat(0).length }}', { $json: { rows: [big, big] } })).toEqual({
+				handled: true,
+				value: 2,
+			});
 		});
 
 		// A single replacement with context tokens can expand to many times the
@@ -589,6 +687,47 @@ describe('Expression - fast native evaluation parity', () => {
 			expect(nativeOn('{{ $json.list.join() }}', { $json })).toEqual({ handled: false });
 			expect(nativeOn('{{ $json.list.at(0) }}', { $json })).toEqual({ handled: true, value: 'a' });
 		});
+
+		// In combined binary mode the host copies every item per all() call, so a
+		// body calling it per visit is charged for the items each call returns.
+		test('node reference calls in a callback body are charged per item', () => {
+			const items = new Array<number>(MAX_RESULT_LENGTH).fill(0);
+			const $input = { all: () => items };
+			const visits = (count: number) => ({
+				$json: { list: new Array<number>(count).fill(0) },
+				$input,
+			});
+			const expr = '{{ $json.list.some(n => $input.all().length === -1) }}';
+			const fits = MAX_WORK / MAX_RESULT_LENGTH - 1;
+			expect(nativeOn(expr, visits(fits + 2))).toEqual({ handled: false });
+			expect(nativeOn(expr, visits(fits))).toEqual({ handled: true, value: false });
+		});
+
+		// `$('hasOwnProperty')` resolves through a plain object lookup on the
+		// host and hands back Object.prototype.hasOwnProperty, not item data.
+		test('a node reference call that returns no item shape hands off to the engine', () => {
+			const { hasOwnProperty } = Object.prototype;
+			const prototypeNode = {
+				$: () => ({ all: () => hasOwnProperty, first: () => hasOwnProperty }),
+			};
+			expect(nativeOn("{{ $('hasOwnProperty').all().name }}", prototypeNode)).toEqual({
+				handled: false,
+			});
+			expect(nativeOn("{{ $('hasOwnProperty').first() }}", prototypeNode)).toEqual({
+				handled: false,
+			});
+			const item = { json: { a: 1 } };
+			const node = { $: () => ({ all: () => [item], first: () => item, last: () => undefined }) };
+			expect(nativeOn("{{ $('Source').all().length }}", node)).toEqual({ handled: true, value: 1 });
+			expect(nativeOn("{{ $('Source').first().json.a }}", node)).toEqual({
+				handled: true,
+				value: 1,
+			});
+			expect(nativeOn("{{ $('Source').last() }}", node)).toEqual({
+				handled: true,
+				value: undefined,
+			});
+		});
 	});
 
 	// extendSyntax rewrites calls to extension-named methods into extend()
@@ -598,7 +737,7 @@ describe('Expression - fast native evaluation parity', () => {
 		const extensionNames = new Set(
 			ExpressionExtensions.flatMap((extension) => Object.keys(extension.functions)),
 		);
-		for (const method of [...CALLABLE_METHODS, ...ITERATOR_METHODS]) {
+		for (const method of [...CALLABLE_METHODS, ...ITERATOR_METHODS, ...TIME_METHODS.keys()]) {
 			expect(extensionNames.has(method)).toBe(false);
 		}
 	});
