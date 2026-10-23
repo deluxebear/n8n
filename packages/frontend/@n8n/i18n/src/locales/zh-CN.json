@@ -10494,5 +10494,11 @@
 	"promotions.modal.incoming.confirmSelected.confirmButtonText": "应用",
 	"promotions.modal.incoming.applied.messageNotPublished": "新建 {created} 个，更新 {updated} 个，归档 {archived} 个，删除 {deleted} 个。有 {notPublished} 个无法发布。",
 	"agents.channels.teams.settings.uploadHint": "如需更新，请在 Teams 中依次打开 Apps › Manage your apps › Upload an app，然后上传新的应用包。",
-	"agents.channels.teams.settings.findBot": "查找你的 Azure Bot"
+	"agents.channels.teams.settings.findBot": "查找你的 Azure Bot",
+	"agents.n8nChatPage.makeAvailable.action": "设为可用",
+	"agents.n8nChatPage.makeAvailable.title": "将 {name} 设为在此处可用",
+	"agents.n8nChatPage.makeAvailable.description": "{projectName} 中的所有人都可以在 n8n Chat 中与此智能体聊天。",
+	"agents.n8nChatPage.makeAvailable.publishNotice": "这将发布智能体的当前版本，所有尚未发布的更改也将上线。",
+	"agents.n8nChatPage.makeAvailable.confirm": "发布并设为可用",
+	"agents.n8nChatPage.makeAvailable.error": "无法将此智能体设为可用，请重试。"
 }
