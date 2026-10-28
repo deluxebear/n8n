@@ -1,3 +1,6 @@
+// Experiment cleanup (123_surface_mcp_to_claude_trial_users)
+import { EventService } from '@n8n/backend-services';
+// EOF Experiment cleanup
 // Mock the barrel import so these adapter tests only exercise local formatting helpers.
 vi.mock('@n8n/instance-ai', async () => {
 	const {
@@ -2601,12 +2604,59 @@ describe('createDataTableAdapter', () => {
 	});
 
 	describe('instance read-only mode', () => {
+		type DataTableAdapter = ReturnType<typeof createDataTableAdapterForTests>['adapter'];
+
 		it('blocks write operations when instance is in read-only mode', async () => {
 			const { adapter } = createDataTableAdapterForTests({ branchReadOnly: true });
 
 			await expect(adapter.create('Test', [])).rejects.toThrow(
 				'Cannot modify data tables on a protected instance',
 			);
+		});
+
+		it.each([
+			['delete', async (adapter: DataTableAdapter) => await adapter.delete('dt-1')],
+			[
+				'addColumn',
+				async (adapter: DataTableAdapter) =>
+					await adapter.addColumn('dt-1', { name: 'col', type: 'string' }),
+			],
+			[
+				'deleteColumn',
+				async (adapter: DataTableAdapter) => await adapter.deleteColumn('dt-1', 'col-1'),
+			],
+			[
+				'renameColumn',
+				async (adapter: DataTableAdapter) => await adapter.renameColumn('dt-1', 'col-1', 'renamed'),
+			],
+		])('blocks %s when instance is in read-only mode', async (_name, run) => {
+			const { adapter } = createDataTableAdapterForTests({ branchReadOnly: true });
+
+			await expect(run(adapter)).rejects.toThrow(
+				'Cannot modify data tables on a protected instance',
+			);
+		});
+
+		it('allows row writes when instance is in read-only mode', async () => {
+			const { adapter, mockDataTableService } = createDataTableAdapterForTests({
+				branchReadOnly: true,
+			});
+			const mocks = mockDataTableService as unknown as Record<string, Mock>;
+			mocks.insertRows = vi.fn().mockResolvedValue(1);
+			mocks.updateRows = vi.fn().mockResolvedValue([{ id: 'row-1' }]);
+			mocks.deleteRows = vi.fn().mockResolvedValue([{ id: 'row-1' }]);
+			const filter = {
+				type: 'and' as const,
+				filters: [{ columnName: 'id', condition: 'eq' as const, value: 'row-1' }],
+			};
+
+			await adapter.insertRows('dt-1', [{ col: 'val' }]);
+			await adapter.updateRows('dt-1', filter, { col: 'new' });
+			await adapter.deleteRows('dt-1', filter);
+
+			expect(mocks.insertRows).toHaveBeenCalled();
+			expect(mocks.updateRows).toHaveBeenCalled();
+			expect(mocks.deleteRows).toHaveBeenCalled();
 		});
 
 		it('allows read operations when instance is in read-only mode', async () => {
@@ -2637,6 +2687,9 @@ describe('createDataTableAdapter', () => {
 // ---------------------------------------------------------------------------
 
 function createWorkflowAdapterForTests(overrides?: {
+	// Experiment cleanup (123_surface_mcp_to_claude_trial_users)
+	threadId?: string | null;
+	// EOF Experiment cleanup
 	setupPanelVariant?: 'control' | 'variant';
 	namedVersionsLicensed?: boolean;
 	foldersLicensed?: boolean;
@@ -2720,6 +2773,9 @@ function createWorkflowAdapterForTests(overrides?: {
 		preventTampering: vi.fn(async (data: unknown) => data),
 	};
 	const mockTelemetry = { track: vi.fn() };
+	// Experiment cleanup (123_surface_mcp_to_claude_trial_users)
+	const discoveryActivity = mock<EventService>();
+	// EOF Experiment cleanup
 	const mockFolderRepository = {
 		getFolderPathsToRoot: vi.fn().mockResolvedValue(new Map<string, string[]>()),
 		getMany: vi.fn().mockResolvedValue([]),
@@ -2793,7 +2849,8 @@ function createWorkflowAdapterForTests(overrides?: {
 			isSharingEnabled: vi.fn().mockReturnValue(overrides?.sharingEnabled ?? false),
 		} as unknown as License,
 		{} as unknown as ConstructorParameters<typeof InstanceAiAdapterService>[26],
-		{} as unknown as ConstructorParameters<typeof InstanceAiAdapterService>[27],
+		// Experiment cleanup (123_surface_mcp_to_claude_trial_users): replace discoveryActivity with {}; keep this constructor argument.
+		discoveryActivity as unknown as ConstructorParameters<typeof InstanceAiAdapterService>[27],
 		{} as unknown as ConstructorParameters<typeof InstanceAiAdapterService>[28],
 		mockTelemetry as unknown as ConstructorParameters<typeof InstanceAiAdapterService>[29],
 		mockAiBuilderTemporaryWorkflowRepository as unknown as AiBuilderTemporaryWorkflowRepository,
@@ -2828,7 +2885,8 @@ function createWorkflowAdapterForTests(overrides?: {
 	const boundProjectId =
 		overrides && 'projectId' in overrides ? (overrides.projectId ?? undefined) : 'team-project-id';
 	const context = service.createContext(mockUser, {
-		threadId: 'thread-1',
+		// Experiment cleanup (123_surface_mcp_to_claude_trial_users): restore threadId: 'thread-1'.
+		threadId: overrides?.threadId === null ? undefined : (overrides?.threadId ?? 'thread-1'),
 		projectId: boundProjectId,
 		folderExplorationEnabled: overrides?.folderExploration ?? false,
 		setupPanelVariant: overrides?.setupPanelVariant,
@@ -2837,6 +2895,9 @@ function createWorkflowAdapterForTests(overrides?: {
 	const adapter = context.workflowService;
 
 	return {
+		// Experiment cleanup (123_surface_mcp_to_claude_trial_users)
+		discoveryActivity,
+		// EOF Experiment cleanup
 		adapter,
 		context,
 		savedWorkflow,
@@ -2870,6 +2931,69 @@ describe('createWorkflowAdapter', () => {
 		vi.clearAllMocks();
 		mockedUserHasScopes.mockResolvedValue(true);
 	});
+
+	// Experiment cleanup (123_surface_mcp_to_claude_trial_users)
+	it('records Assistant creation and modification, but not publishing', async () => {
+		const { adapter, discoveryActivity, mockUser } = createWorkflowAdapterForTests();
+
+		await adapter.createFromWorkflowJSON(minimalWorkflowJSON);
+		expect(discoveryActivity.emit).toHaveBeenCalledWith('experiment-assistant-change-saved', {
+			userId: mockUser.id,
+			at: expect.any(Number),
+		});
+
+		await adapter.updateFromWorkflowJSON('wf-new', minimalWorkflowJSON);
+		expect(discoveryActivity.emit).toHaveBeenCalledTimes(2);
+
+		await adapter.publish('wf-new');
+		expect(discoveryActivity.emit).toHaveBeenCalledTimes(2);
+	});
+
+	it('does not record writes without the thread context required by Builder events', async () => {
+		const { adapter, discoveryActivity, mockTelemetry } = createWorkflowAdapterForTests({
+			threadId: null,
+		});
+
+		await adapter.createFromWorkflowJSON(minimalWorkflowJSON);
+		await adapter.updateFromWorkflowJSON('wf-new', minimalWorkflowJSON);
+
+		expect(discoveryActivity.emit).not.toHaveBeenCalled();
+		expect(mockTelemetry.track).not.toHaveBeenCalled();
+	});
+
+	it.each(['create', 'update'] as const)(
+		'does not record a failed Builder %s',
+		async (operation) => {
+			const { adapter, discoveryActivity, mockWorkflowService, mockTelemetry } =
+				createWorkflowAdapterForTests();
+			mockWorkflowService.update.mockRejectedValueOnce(new Error('Save failed'));
+
+			const result =
+				operation === 'create'
+					? adapter.createFromWorkflowJSON(minimalWorkflowJSON)
+					: adapter.updateFromWorkflowJSON('wf-new', minimalWorkflowJSON);
+			await expect(result).rejects.toThrow('Save failed');
+
+			expect(discoveryActivity.emit).not.toHaveBeenCalled();
+			expect(mockTelemetry.track).not.toHaveBeenCalled();
+		},
+	);
+
+	it('records a successful save even when telemetry fails', async () => {
+		const { adapter, discoveryActivity, mockTelemetry, mockUser } = createWorkflowAdapterForTests();
+		mockTelemetry.track.mockImplementationOnce(() => {
+			throw new Error('Telemetry unavailable');
+		});
+
+		await expect(adapter.updateFromWorkflowJSON('wf-new', minimalWorkflowJSON)).rejects.toThrow(
+			'Telemetry unavailable',
+		);
+		expect(discoveryActivity.emit).toHaveBeenCalledWith('experiment-assistant-change-saved', {
+			userId: mockUser.id,
+			at: expect.any(Number),
+		});
+	});
+	// EOF Experiment cleanup
 
 	it('summarizes pinned data as node names and item counts, without payloads', async () => {
 		const { adapter, mockWorkflowFinderService } = createWorkflowAdapterForTests();
@@ -7833,39 +7957,39 @@ describe('createContext — builder delegate wiring', () => {
 
 	it.each([
 		{
-			name: 'omits new Agent builds when Agents are disabled',
+			name: 'omits Agent builds when Settings > Agents is off',
 			moduleActive: true,
-			resumeAgentBuild: false,
+			agentsEnabled: false,
 			expected: false,
 		},
 		{
-			name: 'keeps admitted Agent builds when Agents are disabled',
+			name: 'wires Agent builds when the module is active and Settings > Agents is on',
 			moduleActive: true,
-			resumeAgentBuild: true,
+			agentsEnabled: true,
 			expected: true,
 		},
 		{
-			name: 'omits admitted Agent builds when the module is inactive',
+			name: 'omits Agent builds when the module is inactive',
 			moduleActive: false,
-			resumeAgentBuild: true,
+			agentsEnabled: true,
 			expected: false,
 		},
-	])('$name', async ({ moduleActive, resumeAgentBuild, expected }) => {
+	])('$name', async ({ moduleActive, agentsEnabled, expected }) => {
 		const { createOrchestrationTools } = await import(
 			'../../../../../@n8n/instance-ai/dist/tools/index.js'
 		);
 		const service = createAdapterWithGatewayMock(vi.fn());
 		const delegate = mock<InstanceAiBuilderDelegate>();
+		delegate.getBuilderTools.mockReturnValue([]);
 		mockBuilderModuleActive(delegate);
 		const moduleRegistry = Container.get(ModuleRegistry);
 		vi.mocked(moduleRegistry.isActive).mockReturnValue(moduleActive);
-		moduleRegistry.settings.set('agents', { enabled: false });
+		moduleRegistry.settings.set('agents', { enabled: agentsEnabled });
 
 		const context = service.createContext(mockUser, {
 			threadId: 'thread-1',
 			projectId: 'proj-1',
 			agentId: 'agent-42',
-			resumeAgentBuild,
 		});
 		const orchestrationContext = mock<OrchestrationContext>();
 		orchestrationContext.domainContext = context;
@@ -7875,7 +7999,7 @@ describe('createContext — builder delegate wiring', () => {
 		expect(context.agentBuilderTarget).toEqual(
 			expected ? { agentId: 'agent-42', projectId: 'proj-1' } : undefined,
 		);
-		expect(tools.has('build-agent')).toBe(expected);
+		expect(tools.has('agent_builder_select_agent')).toBe(expected);
 	});
 
 	it('enables deterministic Agent Builder model catalogs for eval threads', () => {
@@ -8260,6 +8384,41 @@ describe('createCredentialAdapter', () => {
 
 			await expect(credentialService.test('cred-1')).rejects.toBe(refusal);
 			expect(test).not.toHaveBeenCalled();
+		});
+
+		it('writes the stand-in URL into the credential field an eval target names', async () => {
+			const decryptForUse = vi.fn().mockResolvedValue({ apiKey: 'secret' });
+			const test = vi.fn().mockResolvedValue({ status: 'OK', message: 'ok' });
+			const { service, mockUser } = adapterWith(decryptForUse, test);
+			const { credentialService } = service.createContext(mockUser, {
+				getCredentialTestTarget: () => ({
+					credentialType: 'slackApi',
+					baseUrl: 'http://stand-in.test:4100',
+					urlField: 'url',
+				}),
+			});
+
+			await credentialService.test('cred-1');
+
+			expect(test).toHaveBeenCalledWith(
+				mockUser.id,
+				expect.objectContaining({
+					data: { apiKey: 'secret', url: 'http://stand-in.test:4100' },
+				}),
+			);
+		});
+
+		it('tests the stored data unchanged when the thread has no target', async () => {
+			const decryptForUse = vi.fn().mockResolvedValue({ apiKey: 'secret' });
+			const test = vi.fn().mockResolvedValue({ status: 'OK', message: 'ok' });
+			const { credentialService, mockUser } = adapterWith(decryptForUse, test);
+
+			await credentialService.test('cred-1');
+
+			expect(test).toHaveBeenCalledWith(
+				mockUser.id,
+				expect.objectContaining({ data: { apiKey: 'secret' } }),
+			);
 		});
 	});
 

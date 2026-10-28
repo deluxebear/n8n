@@ -137,9 +137,16 @@ export const OPEN_WORKFLOW_IN_ASSISTANT_EXPERIMENT = createExperiment(
 	'108_open_workflow_in_assistant',
 );
 
+// Experiment cleanup (129_aia_inspiration_from_taxonomy_v2)
 export const INSTANCE_AI_INSPIRATION_FROM_TAXONOMY_EXPERIMENT = createExperiment(
-	'112_aia_inspiration_from_taxonomy',
+	'129_aia_inspiration_from_taxonomy_v2',
+	{
+		control: 'control',
+		variant: 'variant',
+		variantBis: 'variant-bis',
+	},
 );
+// EOF Experiment cleanup
 
 export const INSTANCE_AI_PROGRESSIVE_BUILDING_EXPERIMENT = createExperiment(
 	INSTANCE_AI_PROGRESSIVE_BUILDING_FLAG,
@@ -161,8 +168,15 @@ export const MCP_JSON_NUDGE_EXPERIMENT = createExperiment('113_mcp_nudge_modal_o
 
 export const CREDENTIAL_DESCRIPTIONS_EXPERIMENT = createExperiment(CREDENTIAL_DESCRIPTIONS_FLAG);
 
+// Experiment cleanup (123_surface_mcp_to_claude_trial_users)
+export const MCP_DISCOVERY_EXPERIMENT = createExperiment('123_surface_mcp_to_claude_trial_users');
+// EOF Experiment cleanup
 export const SURFACE_ASSISTANT_ON_WORKFLOW_ERROR_EXPERIMENT = createExperiment(
 	'119_surface_assistant_on_workflow_error',
+);
+
+export const WORKFLOW_PREVIEWS_ABOVE_ASSISTANT_EXPERIMENT = createExperiment(
+	'124_workflow_previews_above_assistant',
 );
 
 export const AGENTS_LIST_EMPTY_STATE_TEMPLATES_EXPERIMENT = createExperiment(
@@ -175,7 +189,18 @@ export const AGENTS_N8N_CHAT_EXPERIMENT = createExperiment(AGENTS_N8N_CHAT_FLAG,
 	variantB: 'variant-b',
 });
 
+/**
+ * Boolean flag, matched by instance and Cloud only. Its payload can set
+ * `sampleRate` and `timeoutMs` for the shadow run.
+ */
+export const QUICKJS_EXPRESSION_SHADOW_EXPERIMENT = createExperiment(
+	'126_quickjs_expression_shadow',
+);
+
 export const EXPERIMENTS_TO_TRACK = [
+	// Experiment cleanup (123_surface_mcp_to_claude_trial_users)
+	MCP_DISCOVERY_EXPERIMENT.name,
+	// EOF Experiment cleanup
 	INSTANCE_AI_SETUP_PANEL_EXPERIMENT.name,
 	AI_ASSISTANT_AT_MENTIONS_EXPERIMENT.name,
 	INSTANCE_AI_PROGRESSIVE_BUILDING_EXPERIMENT.name,
@@ -213,10 +238,14 @@ export const EXPERIMENTS_TO_TRACK = [
 	INLINE_AGENTS_EXPERIMENT.name,
 	INSTANCE_AI_FREE_NUDGE_EXPERIMENT.name,
 	OPEN_WORKFLOW_IN_ASSISTANT_EXPERIMENT.name,
+	// Experiment cleanup (129_aia_inspiration_from_taxonomy_v2)
 	INSTANCE_AI_INSPIRATION_FROM_TAXONOMY_EXPERIMENT.name,
+	// EOF Experiment cleanup
 	MCP_JSON_NUDGE_EXPERIMENT.name,
 	CREDENTIAL_DESCRIPTIONS_EXPERIMENT.name,
 	SURFACE_ASSISTANT_ON_WORKFLOW_ERROR_EXPERIMENT.name,
+	WORKFLOW_PREVIEWS_ABOVE_ASSISTANT_EXPERIMENT.name,
 	AGENTS_LIST_EMPTY_STATE_TEMPLATES_EXPERIMENT.name,
 	AGENTS_N8N_CHAT_EXPERIMENT.name,
+	QUICKJS_EXPRESSION_SHADOW_EXPERIMENT.name,
 ];

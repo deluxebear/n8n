@@ -1,6 +1,7 @@
+// Experiment cleanup (123_surface_mcp_to_claude_trial_users): restore a type-only EventService import; keep the import.
+import { EventService } from '@n8n/backend-services';
 /* eslint-disable @typescript-eslint/unbound-method -- mock-based tests intentionally reference unbound methods */
 import type { AgentIntegrationConfig, AgentJsonConfig } from '@n8n/api-types';
-import type { EventService } from '@n8n/backend-services';
 import type { User } from '@n8n/db';
 import { TELEMETRY_EVENT } from '@n8n/telemetry';
 import { OperationalError, UserError } from 'n8n-workflow';
@@ -13,7 +14,7 @@ import { AgentIntegrationPersistenceService } from '../agent-integration-persist
 import { AgentModificationTelemetryService } from '../agent-modification-telemetry.service';
 import type { AgentRuntimeCacheService } from '../agent-runtime-cache.service';
 import type { AgentSetupCompletionService } from '../agent-setup-completion.service';
-import type { Agent } from '../entities/agent.entity';
+import type { ProjectAgent } from '../entities/agent.entity';
 import type { ChatIntegrationRegistry } from '../integrations/agent-chat-integration';
 import type { AgentRepository } from '../repositories/agent.repository';
 import { createAgentSkillRefsService, storedAgentConfig } from './test-utils/stored-agent-config';
@@ -69,7 +70,7 @@ function setup(options: SetupOptions = {}) {
 		activeVersionId: options.activeVersionId === undefined ? 'version-1' : options.activeVersionId,
 		setupCompletedAt: null,
 		updatedAt: new Date('2025-01-01T00:00:00Z'),
-	} as Agent;
+	} as ProjectAgent;
 
 	agentRepository.findById.mockImplementation(async () => ({
 		...row,
@@ -99,10 +100,11 @@ function setup(options: SetupOptions = {}) {
 			runtimeCacheService,
 			chatIntegrationRegistry,
 			eventService,
-			new AgentModificationTelemetryService(telemetry),
+			// Experiment cleanup (123_surface_mcp_to_claude_trial_users): remove only the mock<EventService>() argument.
+			new AgentModificationTelemetryService(telemetry, mock<EventService>()),
 			credentialsService,
 			setupCompletionService,
-			createAgentSkillRefsService(agentRepository),
+			createAgentSkillRefsService(),
 		),
 		agent,
 		row,
@@ -673,6 +675,7 @@ describe('AgentIntegrationPersistenceService', () => {
 
 			expect(credentialsService.getCredentialsAUserCanUseInAWorkflow).toHaveBeenCalledWith(user, {
 				projectId,
+				excludePersonalRoute: true,
 			});
 			expect(emitSetupCompleted).toHaveBeenCalledOnce();
 			expect(agentRepository.updateIntegrations.mock.invocationCallOrder[0]).toBeLessThan(

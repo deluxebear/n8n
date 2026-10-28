@@ -13,7 +13,7 @@ import { mock, type MockProxy } from 'vitest-mock-extended';
 import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from '@n8n/errors';
 import type { CredentialsService } from '@/credentials/credentials.service';
 import type { AgentConfigService } from '@/modules/agents/agent-config.service';
-import type { Agent } from '@/modules/agents/entities/agent.entity';
+import type { ProjectAgent } from '@/modules/agents/entities/agent.entity';
 import type { AgentRepository } from '@/modules/agents/repositories/agent.repository';
 import { userHasScopes } from '@/permissions.ee/check-access';
 
@@ -130,7 +130,7 @@ describe('AgentEvalService', () => {
 		caseGenerationService = mock<AgentEvalCaseGenerationService>();
 		agentConfigService = mock<AgentConfigService>();
 
-		agentRepository.findByIdAndProjectId.mockResolvedValue(mock<Agent>({ id: AGENT_ID }));
+		agentRepository.findByIdAndProjectId.mockResolvedValue(mock<ProjectAgent>({ id: AGENT_ID }));
 		datasetRepository.findByIdAndAgentId.mockResolvedValue(makeDataset());
 		runRepository.findByIdAndAgentId.mockResolvedValue(makeRun());
 		runRepository.findAndCountByDatasetIdAndAgentId.mockResolvedValue([[], 0]);

@@ -12,7 +12,7 @@ import { useToast } from '@n8n/composables/useToast';
 import { MODAL_CONFIRM } from '@/app/constants/modals';
 import Modal from '@/app/components/Modal.vue';
 import TimeAgo from '@/app/components/TimeAgo.vue';
-import { N8nButton, N8nCheckbox, N8nInput, N8nText } from '@n8n/design-system';
+import { N8nButton, N8nCheckbox, N8nInput, N8nNewBadge, N8nText } from '@n8n/design-system';
 import {
 	PROMOTION_BRANCH_PREFIX,
 	type PromotableResourceStatus,
@@ -364,7 +364,7 @@ onMounted(async () => {
 						<TimeAgo :date="lastRefreshedAt" live />
 					</N8nText>
 					<N8nButton
-						variant="subtle"
+						variant="outline"
 						size="small"
 						icon="refresh-cw"
 						data-test-id="promotion-refresh"
@@ -388,7 +388,7 @@ onMounted(async () => {
 							{{ i18n.baseText('promotions.modal.error.description') }}
 						</N8nText>
 						<N8nButton
-							variant="subtle"
+							variant="outline"
 							size="small"
 							data-test-id="promotion-retry"
 							:disabled="isSubmitting"
@@ -444,7 +444,13 @@ onMounted(async () => {
 								<div :class="$style.rowContent">
 									<div :class="$style.rowHeader">
 										<N8nText size="medium" bold>{{ change.name }}</N8nText>
+										<N8nNewBadge
+											v-if="change.status === 'new'"
+											:text="getStatusLabel(change.status)"
+											data-test-id="promotion-change-status"
+										/>
 										<span
+											v-else
 											:class="[
 												$style.statusLabel,
 												change.status === 'archived' && $style.statusArchived,
@@ -499,7 +505,7 @@ onMounted(async () => {
 					</N8nText>
 				</div>
 				<div :class="$style.footerRight">
-					<N8nButton variant="subtle" :disabled="isSubmitting" @click="onClose">
+					<N8nButton variant="outline" :disabled="isSubmitting" @click="onClose">
 						{{ i18n.baseText('promotions.modal.close') }}
 					</N8nButton>
 					<N8nButton

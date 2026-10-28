@@ -11,6 +11,7 @@ export type * from './api-keys';
 export type * from './community-node-types';
 export type * from './quick-connect';
 export * from './agents/index';
+export * from './builder-tool-names';
 export * from './schemas/mcp-tool-permissions.schema';
 export * from './instance-registry-types';
 export type * from './instance-reporting';
@@ -332,6 +333,7 @@ export type {
 	BreakingChangeAffectedWorkflow,
 	BreakingChangeWorkflowOwner,
 	MigrationWorkflowOwnerResponse,
+	MigrationOwnerCandidate,
 	MigrationOwnerSource,
 	BreakingChangeInstanceIssue,
 	BreakingChangeWorkflowIssue,
@@ -344,6 +346,9 @@ export type {
 	BreakingChangeVersion,
 	MigrationFindingStatus,
 	MigrationFindingTriageStatus,
+	MigrationFindingListedStatus,
+	MigrationNotifyResult,
+	MigrationNotifySkipReason,
 	WorkflowMigrationResult,
 } from './schemas/breaking-changes.schema';
 
@@ -353,6 +358,8 @@ export {
 	breakingChangeVersionSchema,
 	migrationFindingStatusSchema,
 	migrationFindingTriageStatusSchema,
+	migrationFindingListedStatusSchema,
+	migrationNotifySkipReasonSchema,
 	migrationOwnerSourceSchema,
 } from './schemas/breaking-changes.schema';
 
@@ -498,6 +505,7 @@ export {
 	InstanceAiEvalExecutionRequest,
 	InstanceAiEvalAgentExecutionRequest,
 	InstanceAiEvalCredentialAllowlistRequest,
+	InstanceAiEvalCredentialTestTargetRequest,
 	INSTANCE_AI_MEMORY_TASK_WAIT_TIMEOUT_MS,
 	AI_GATEWAY_MANAGED_TAG,
 	InstanceAiEvalRestoreThreadRequest,
@@ -736,11 +744,17 @@ export {
 } from './schemas/instance-ai-setup-credential-selection';
 
 export type {
+	McpRegistryDiscoveredConnection,
+	McpRegistryDiscoveredTool,
+	McpRegistryDiscoveryFailureReason,
+	McpRegistryDiscoveryRequest,
+	McpRegistryDiscoveryResponse,
 	McpRegistryServerStatus,
 	McpRegistryServerIconResponse,
 	McpRegistryServerToolResponse,
 	McpRegistryServerResponse,
 } from './schemas/mcp-registry.schema';
+export { mcpRegistryDiscoveryRequestSchema } from './schemas/mcp-registry.schema';
 
 export {
 	createInitialState,
@@ -750,6 +764,7 @@ export {
 	stateFromAgentTree,
 	normalizeLegacyReasoningTimeline,
 	normalizeAgentTree,
+	orchestratorAgentId,
 } from './schemas/agent-run-reducer';
 
 export type { AgentRunState } from './schemas/agent-run-reducer';
@@ -792,6 +807,7 @@ export {
 	MCP_APPS_VARIANT_CONTROL,
 	MCP_APPS_VARIANT_ENABLED,
 	MCP_AGENT_SCOPES,
+	MCP_SKILL_SCOPES,
 	MCP_INSTANCE_SCOPES,
 	MCP_CLIENT_BRAND_MATCHERS,
 	MCP_CLIENT_TYPE_FILTERS,
@@ -967,4 +983,41 @@ export { compareExecutionListItems } from './dto/executions/compare-execution-li
 
 export type * from './workflow-suggestions';
 export * from './self-healing-results';
+
+export {
+	createInstanceAiEventLifecycle,
+	acceptInstanceAiEvent,
+	canAcceptInstanceAiEvent,
+} from './schemas/instance-ai-event-lifecycle';
+export type { InstanceAiEventLifecycle } from './schemas/instance-ai-event-lifecycle';
+export * from './inbox';
 export * from './model-priority';
+
+export {
+	RsaPublicJwkSchema,
+	EcPublicJwkSchema,
+	PublicJwkSchema,
+	type PublicJwk,
+	JwksResponseSchema,
+	type JwksResponse,
+} from './schemas/jwks.schema';
+
+export type {
+	ScimUser,
+	ScimUserCreate,
+	ScimPatchOp,
+	ScimPatchRequest,
+	ScimListResponse,
+	ScimError,
+	ScimMeta,
+	ScimUserName,
+	ScimEmail,
+	ScimRole,
+} from './schemas/scim.schema';
+export {
+	scimUserSchema,
+	scimUserCreateSchema,
+	scimPatchRequestSchema,
+	scimListResponseSchema,
+	scimErrorSchema,
+} from './schemas/scim.schema';
