@@ -81,7 +81,7 @@ describe('Expression', () => {
 
 			vi.useFakeTimers({ now: new Date() });
 			expect(() => evaluate('={{constructor}}')).toThrowError(
-				new ExpressionError('Cannot access "constructor" due to security concerns'),
+				'Cannot access "constructor" due to security concerns',
 			);
 			vi.useRealTimers();
 
@@ -244,12 +244,34 @@ describe('Expression', () => {
 
 			vi.useFakeTimers({ now: new Date() });
 			expect(() => evaluate("={{ Date['constructor']('testFn()')()}}")).toThrowError(
-				new ExpressionError('Cannot access "constructor" due to security concerns'),
+				'Cannot access "constructor" due to security concerns',
 			);
 			vi.useRealTimers();
 
 			expect(testFn).not.toHaveBeenCalled();
 		});
+
+		it.each([
+			[
+				'caller',
+				'={{ (function () { function recover() {} try { return recover["call" + "er"]; } catch (e) { return "threw: " + e.message; } })() }}',
+			],
+			[
+				'callee',
+				'={{ (function () { function recover() {} try { return recover["cal" + "lee"]; } catch (e) { return "threw: " + e.message; } })() }}',
+			],
+			[
+				'arguments',
+				'={{ (function () { function recover() {} try { return recover["argu" + "ments"]; } catch (e) { return "threw: " + e.message; } })() }}',
+			],
+		])(
+			'should reject computed access to "%s" when the key is built at runtime',
+			(name, expression) => {
+				expect(evaluate(expression)).toBe(
+					`threw: Cannot access "${name}" due to security concerns`,
+				);
+			},
+		);
 
 		it('should include runIndex and itemIndex in error when .constructor is used', () => {
 			let thrownError: ExpressionError | undefined;
@@ -821,7 +843,8 @@ describe('Expression', () => {
 				],
 				[
 					'template substitution',
-					"={{ new (class { [`${''}__sanitize`] = ''.concat.bind(''); r = ({})['con' + 'structor'] })().r }}",
+					'={{ new (class { [`$' +
+						"{''}__sanitize`] = ''.concat.bind(''); r = ({})['con' + 'structor'] })().r }}",
 				],
 			])(
 				'should keep the reserved sanitizer reachable only lexically (%s key)',

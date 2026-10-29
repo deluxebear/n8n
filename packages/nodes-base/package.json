@@ -1,6 +1,6 @@
 {
   "name": "n8n-nodes-base",
-  "version": "2.45.3",
+  "version": "2.45.4",
   "description": "Base nodes of n8n",
   "main": "index.js",
   "typesVersions": {
@@ -978,7 +978,6 @@
     "fastest-levenshtein": "catalog:",
     "fflate": "catalog:",
     "form-data": "catalog:",
-    "generate-schema": "2.6.0",
     "get-system-fonts": "2.0.2",
     "gm": "1.25.1",
     "html-to-text": "9.0.5",

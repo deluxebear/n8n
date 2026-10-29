@@ -11042,5 +11042,14 @@
 	"agents.channels.teams.managed.connect.adminConsent": "需要管理员批准？请联系组织管理员为 n8n 批准一次。",
 	"agents.channels.teams.managed.connect.adminConsentLink": "复制给管理员的链接",
 	"agents.channels.teams.managed.createBot.checking": "正在查找 n8n 可用的 Azure 订阅…",
-	"agents.channels.teams.managed.createBot.retry": "重新检查 Azure 订阅"
+	"agents.channels.teams.managed.createBot.retry": "重新检查 Azure 订阅",
+	"settings.ldap.form.linkExistingAccountsByEmail.label": "通过 LDAP 电子邮件链接现有帐户",
+	"settings.ldap.form.linkExistingAccountsByEmail.tooltip": "如果此目录不验证电子邮件地址，请关闭。电子邮件与现有 n8n 帐户匹配的 LDAP 用户将不会被链接；登录被阻止，同步会跳过它们。",
+	"agents.publish.modal.description.liveInN8nChat": "已发布到 n8n Chat，{projectName} 中的任何人都可以与其对话。",
+	"agents.publish.modal.talkToAgent": "与智能体对话",
+	"agents.n8nChatHint.gotIt": "知道了",
+	"agents.n8nChatHint.channelAdded.title": "现已加入 n8n Chat",
+	"agents.n8nChatHint.channelAdded.body": "发布后，项目中的任何人都可以通过新建聊天与此智能体对话。您可以随时取消发布。",
+	"agents.n8nChatHint.newChatSidebar.title": "在这里与您的智能体对话",
+	"agents.n8nChatHint.newChatSidebar.body": "您创建的智能体将显示在此处。单击即可开始对话。"
 }
