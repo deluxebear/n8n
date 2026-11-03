@@ -11,7 +11,7 @@ import {
 	type QuestionAnswer,
 	getLegacyBuilderToolNames,
 } from '@n8n/api-types';
-import type { InstanceAiCredentialService } from '@n8n/instance-ai';
+import type { BuilderCredentialService } from '../builder-session';
 import { TELEMETRY_EVENT } from '@n8n/telemetry';
 import { nanoid } from 'nanoid';
 import { z } from 'zod';
@@ -29,7 +29,7 @@ function credentialsOfType(
 
 /** Resolve a credential's display name by id via `get`, falling back to the id if it was deleted between suspend and resume. */
 async function credentialNameById(
-	credentialService: InstanceAiCredentialService,
+	credentialService: BuilderCredentialService,
 	credentialId: string,
 ): Promise<string> {
 	try {
@@ -303,7 +303,7 @@ async function validateChannelTypes(
 
 /**
  * Validate input, then auto-resolve every credential slot using the same
- * rules as agent_builder_ask_credential (matching channel credential first, then a single
+ * rules as credentials setup for an Agent (matching channel credential first, then a single
  * existing credential of the type). Slots that cannot be auto-resolved
  * become a phase. Phase order is fixed: questions, then credentials, then
  * one channel phase per requested channel — channels always run last after

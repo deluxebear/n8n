@@ -26,7 +26,6 @@ describe('useAgentBuilderTelemetry', () => {
 			projectId: ref('project-1'),
 			agent: ref<AgentResource | null>(null),
 			localConfig,
-			connectedTriggers: ref(['slack']),
 		});
 
 		telemetry.trackTriggerRemoved({ triggerType: 'n8n_chat', triggers: ['slack'] });

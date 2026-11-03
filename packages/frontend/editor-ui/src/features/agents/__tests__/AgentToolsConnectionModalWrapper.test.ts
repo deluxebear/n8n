@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { defineComponent, nextTick, onMounted, watchEffect } from 'vue';
 import { createTestingPinia } from '@pinia/testing';
 import { flushPromises } from '@vue/test-utils';
-import type { McpRegistryServerResponse } from '@n8n/api-types';
+import { AI_GATEWAY_MANAGED_TAG, type McpRegistryServerResponse } from '@n8n/api-types';
 import { NodeConnectionTypes, type INodeTypeDescription } from 'n8n-workflow';
 
 import { useTypeAvailabilityPoliciesStore } from '@n8n/frontend-module-type-availability-policies';
@@ -1196,6 +1196,67 @@ describe('AgentToolsConnectionModalWrapper', () => {
 			expect(onConfirm).toHaveBeenCalledWith({ tools: [], mcpServers: [configured] });
 		});
 
+		describe('Gateway credits', () => {
+			const firecrawl: McpRegistryServerResponse = {
+				slug: 'firecrawl',
+				nodeTypeName: '@n8n/mcp-registry.firecrawl',
+				name: 'dev.firecrawl/mcp',
+				title: 'Firecrawl',
+				description: 'Scrape the web',
+				tagline: 'Firecrawl tools',
+				version: '1.0.0',
+				updatedAt: '2026-09-25T00:00:00.000Z',
+				icons: [],
+				credentials: [
+					{ credentialType: 'firecrawlMcpOAuth2Api', name: 'OAuth2', value: 'oAuth2' },
+					{
+						credentialType: 'n8nConnectFirecrawlMcpAiGatewayApi',
+						name: 'Gateway credits',
+						value: 'aiGateway',
+					},
+				],
+				tools: [{ name: 'firecrawl_scrape' }],
+				isTemplated: false,
+				isOfficial: true,
+				status: 'active',
+			};
+
+			it('drafts a Gateway credits entry with the Gateway credits marker', async () => {
+				fetchMcpRegistryCatalogMock.mockResolvedValue([firecrawl]);
+				render([], vi.fn());
+				await flushPromises();
+
+				const item = getItems().find((candidate) => candidate.id === 'registry:firecrawl');
+				emitSelectCredential(item!, 'n8nConnectFirecrawlMcpAiGatewayApi', AI_GATEWAY_MANAGED_TAG);
+				await flushPromises();
+
+				const { mcpServer } = getConfigData() as { mcpServer: AgentJsonMcpServerConfig };
+				expect(mcpServer).toMatchObject({
+					authentication: 'none',
+					credential: AI_GATEWAY_MANAGED_TAG,
+					metadata: { nodeTypeName: firecrawl.nodeTypeName },
+				});
+			});
+
+			it('shows a saved Gateway credits entry as connected', async () => {
+				fetchMcpRegistryCatalogMock.mockResolvedValue([firecrawl]);
+				render([], vi.fn(), [
+					{
+						name: 'Firecrawl',
+						url: 'https://mcp.firecrawl.dev/mcp',
+						transport: 'streamableHttp',
+						authentication: 'none',
+						credential: AI_GATEWAY_MANAGED_TAG,
+						metadata: { nodeTypeName: firecrawl.nodeTypeName },
+					},
+				]);
+				await flushPromises();
+
+				const connected = getItems().find((item) => item.id.startsWith('mcp:'));
+				expect(connected).toMatchObject({ status: 'connected', freeCredits: true });
+			});
+		});
+
 		it('commits an added MCP server to the host once its configure step saves', async () => {
 			const onConfirm = vi.fn();
 			render([], onConfirm);
@@ -1379,6 +1440,17 @@ describe('AgentToolsConnectionModalWrapper', () => {
 			expect(fetchForProject).toHaveBeenCalledWith(PROJECT_ID);
 		});
 
+		it('refetches the policy on open, so a policy changed since the builder loaded still applies', async () => {
+			const reload = vi
+				.spyOn(useTypeAvailabilityPoliciesStore(), 'reload')
+				.mockResolvedValue(undefined);
+
+			render([], vi.fn(), [], PROJECT_ID);
+			await flushPromises();
+
+			expect(reload).toHaveBeenCalled();
+		});
+
 		it('flags a restricted tool so the modal can lock it and list it last', async () => {
 			mockRestrictedNodeTypes({ [SLACK.name]: 'instance' });
 
@@ -1487,14 +1559,10 @@ describe('AgentToolsConnectionModalWrapper', () => {
 			expect(multiStepAttrs['editable-title']).toBe(true);
 		});
 
-		it('adds nothing when the installed community tool turns out to be restricted', async () => {
+		it('adds nothing when the install reports the selected tool as restricted', async () => {
 			mockCommunityPreviewCatalog();
 			mockRestrictedNodeTypes();
-			// The install reloads the policy, which now covers the new node type.
-			installNodeMock.mockImplementation(async () => {
-				mockRestrictedNodeTypes({ [COMMUNITY_INSTALLED.name]: 'instance' });
-				return { success: true };
-			});
+			installNodeMock.mockResolvedValue({ success: true, restricted: true });
 			render();
 			await flushPromises();
 
@@ -1502,8 +1570,12 @@ describe('AgentToolsConnectionModalWrapper', () => {
 			emitConnect(preview!);
 			await flushPromises();
 
+			expect(installNodeMock).toHaveBeenCalledWith(
+				expect.objectContaining({ selectedNodeType: COMMUNITY_PREVIEW.name }),
+			);
 			expect(configFormData).toBeNull();
-			expect(showMessageMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'warning' }));
+			// The install toast names the restricted tool, so no second warning appears.
+			expect(showMessageMock).not.toHaveBeenCalled();
 		});
 
 		it('leaves the list untouched when nothing is restricted', async () => {

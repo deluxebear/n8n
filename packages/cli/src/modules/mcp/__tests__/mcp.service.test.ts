@@ -25,6 +25,7 @@ import {
 	InstanceWriteAccessService,
 	ExecutionRedactionServiceProxy,
 	WorkflowPublishedDataService,
+	AiPreferenceService,
 } from '@n8n/backend-services';
 import { mockInstance, mockLogger } from '@n8n/backend-test-utils';
 import { EndpointsConfig, ExecutionsConfig, GlobalConfig, WorkflowsConfig } from '@n8n/config';
@@ -57,7 +58,6 @@ import { NodeCatalogService } from '@/node-catalog';
 import { NodeTypes } from '@/node-types';
 import { PostHogClient } from '@/posthog';
 import { AiGatewayService } from '@/services/ai-gateway.service';
-import { AiPreferenceService } from '@/services/ai-preference.service';
 import { FolderService } from '@/services/folder.service';
 import { NodeResourceExplorerService } from '@/services/node-resource-explorer.service';
 import { ProjectService } from '@/services/project.service.ee';
@@ -77,8 +77,9 @@ import { registerWorkflowPreviewApp, WORKFLOW_PREVIEW_APP_URI } from '@n8n/mcp-a
 import { McpConfig } from '../mcp.config';
 import {
 	MCP_DISCOVER_METHOD,
-	MCP_INSTANCE_READ_ONLY_ERROR_MESSAGE,
 	MCP_PREVIEW_RENDER_REQUESTED_EVENT,
+	MCP_INSTANCE_READ_ONLY_ERROR_MESSAGE,
+	MCP_SKILLS_EXTENSION_FLAG,
 } from '../mcp.constants';
 import { McpService, type McpFeatureFlags } from '../mcp.service';
 import type { McpAuthContext, McpClientInfo, ToolDefinition } from '../mcp.types';
@@ -458,6 +459,7 @@ describe('McpService', () => {
 				mcpApps: { enabled: true, variant: 'variant' },
 				instanceContextEnabled: false,
 				aiPreferencesEnabled: false,
+				skillsExtensionEnabled: false,
 			});
 
 			expect(postHogClient.getFeatureFlags).toHaveBeenCalledTimes(1);
@@ -624,6 +626,20 @@ describe('McpService', () => {
 			});
 		});
 
+		it.each([
+			[true, true],
+			['variant', false],
+			[undefined, false],
+		])('resolves the skills extension flag %j to %j', async (value, enabled) => {
+			const postHogClient = mockInstance(PostHogClient);
+			postHogClient.getFeatureFlags.mockResolvedValue({ [MCP_SKILLS_EXTENSION_FLAG]: value });
+			const service = buildResolutionService({ postHogClient });
+
+			await expect(service.resolveFeatureFlags(user)).resolves.toMatchObject({
+				skillsExtensionEnabled: enabled,
+			});
+		});
+
 		it('still queries PostHog when only some features are env-overridden', async () => {
 			const postHogClient = mockInstance(PostHogClient);
 			postHogClient.getFeatureFlags.mockResolvedValue({});
@@ -634,6 +650,7 @@ describe('McpService', () => {
 				mcpApps: { enabled: true, variant: 'env_override' },
 				instanceContextEnabled: false,
 				aiPreferencesEnabled: false,
+				skillsExtensionEnabled: false,
 			});
 
 			expect(postHogClient.getFeatureFlags).toHaveBeenCalledTimes(1);
@@ -655,6 +672,7 @@ describe('McpService', () => {
 				mcpApps: { enabled: true, variant: 'env_override' },
 				instanceContextEnabled: true,
 				aiPreferencesEnabled: true,
+				skillsExtensionEnabled: false,
 			});
 
 			expect(postHogClient.getFeatureFlags).toHaveBeenCalledTimes(1);
@@ -713,6 +731,7 @@ describe('McpService', () => {
 							'content-type': 'application/json',
 							accept: 'application/json, text/event-stream',
 							'mcp-method': 'tools/list',
+							'mcp-protocol-version': '2026-07-28',
 						},
 						body: JSON.stringify({
 							jsonrpc: '2.0',
@@ -796,6 +815,7 @@ describe('McpService', () => {
 							'content-type': 'application/json',
 							accept: 'application/json, text/event-stream',
 							'mcp-method': MCP_DISCOVER_METHOD,
+							'mcp-protocol-version': '2026-07-28',
 						},
 						body: JSON.stringify({
 							jsonrpc: '2.0',

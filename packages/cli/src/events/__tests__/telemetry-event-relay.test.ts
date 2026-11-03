@@ -286,6 +286,43 @@ describe('TelemetryEventRelay', () => {
 		});
 	});
 
+	describe('memory guard events', () => {
+		it('should track on `memory-guard-execution-stopped` event and send it at once', () => {
+			const event: RelayEventMap['memory-guard-execution-stopped'] = {
+				executionId: 'execution123',
+				workflowId: 'workflow123',
+				mode: 'webhook',
+				reason: 'critical',
+				runningNodeType: 'n8n-nodes-base.httpRequest',
+				largestDataNodeType: 'n8n-nodes-base.code',
+				estimatedBytes: 300,
+				memoryUsedBytes: 960,
+				memoryLimitBytes: 1000,
+				freedMemory: true,
+				workflowDeactivationStarted: false,
+			};
+
+			eventService.emit('memory-guard-execution-stopped', event);
+
+			expect(telemetry.track).toHaveBeenCalledWith(
+				TELEMETRY_EVENT.PLATFORM.MEMORY_GUARD_STOPPED_EXECUTION,
+				{
+					workflow_id: 'workflow123',
+					execution_mode: 'webhook',
+					reason: 'critical',
+					running_node_type: 'n8n-nodes-base.httpRequest',
+					largest_data_node_type: 'n8n-nodes-base.code',
+					estimated_bytes: 300,
+					memory_used_bytes: 960,
+					memory_limit_bytes: 1000,
+					freed_memory: true,
+					workflow_deactivation_started: false,
+				},
+			);
+			expect(telemetry.flushQueue).toHaveBeenCalled();
+		});
+	});
+
 	describe('project events', () => {
 		it('should track on `team-project-updated` event', () => {
 			const event: RelayEventMap['team-project-updated'] = {
@@ -399,6 +436,21 @@ describe('TelemetryEventRelay', () => {
 				connection_type: 'ssh',
 			});
 		});
+
+		it.each([
+			['v2', TELEMETRY_EVENT.PROMOTIONS.USER_SWITCHED_TO_ENVIRONMENTS_V2],
+			['v1', TELEMETRY_EVENT.PROMOTIONS.USER_SWITCHED_BACK_TO_ENVIRONMENTS_V1],
+		] as const)(
+			'should track the switch to %s on `source-control-environments-version-switched` event',
+			(version, entry) => {
+				eventService.emit('source-control-environments-version-switched', {
+					userId: 'user123',
+					version,
+				});
+
+				expect(telemetry.track).toHaveBeenCalledWith(entry, { user_id: 'user123' });
+			},
+		);
 
 		it('should track on `source-control-user-started-pull-ui` event', () => {
 			const event: RelayEventMap['source-control-user-started-pull-ui'] = {
@@ -3499,6 +3551,7 @@ describe('TelemetryEventRelay', () => {
 					credentials: {
 						matched: 2,
 						created: 1,
+						updated: 4,
 						requirements: 3,
 					},
 					dataTables: {
@@ -3556,6 +3609,7 @@ describe('TelemetryEventRelay', () => {
 				folders_removed: 1,
 				credentials_matched: 2,
 				credentials_created: 1,
+				credentials_updated: 4,
 				credentials_required: 3,
 				data_tables_matched: 1,
 				data_tables_created: 1,
@@ -3781,6 +3835,46 @@ describe('TelemetryEventRelay', () => {
 			});
 		});
 
+		it('should track on `user-mfa-enabled` event', () => {
+			const event: RelayEventMap['user-mfa-enabled'] = {
+				user: {
+					id: 'user123',
+					email: 'user@example.com',
+					firstName: 'John',
+					lastName: 'Doe',
+					role: { slug: GLOBAL_OWNER_ROLE.slug },
+				},
+			};
+
+			eventService.emit('user-mfa-enabled', event);
+
+			expect(telemetry.track).toHaveBeenCalledWith(TELEMETRY_EVENT.AUTH.USER_ENABLED_MFA, {
+				user_id: 'user123',
+			});
+		});
+
+		it.each(['mfaCode', 'recoveryCode'] as const)(
+			'should track on `user-mfa-disabled` event with %s',
+			(disableMethod) => {
+				const event: RelayEventMap['user-mfa-disabled'] = {
+					user: {
+						id: 'user123',
+						email: 'user@example.com',
+						firstName: 'John',
+						lastName: 'Doe',
+						role: { slug: GLOBAL_OWNER_ROLE.slug },
+					},
+					disableMethod,
+				};
+
+				eventService.emit('user-mfa-disabled', event);
+
+				expect(telemetry.track).toHaveBeenCalledWith(TELEMETRY_EVENT.AUTH.USER_DISABLED_MFA, {
+					user_id: 'user123',
+				});
+			},
+		);
+
 		it('should track on `user-submitted-personalization-survey` event', () => {
 			const event: RelayEventMap['user-submitted-personalization-survey'] = {
 				userId: 'user123',
@@ -3901,6 +3995,46 @@ describe('TelemetryEventRelay', () => {
 					}),
 				}),
 			);
+		});
+
+		it('should report the managed database and Redis vendors, never the host names', async () => {
+			const original = { database: globalConfig.database, queue: globalConfig.queue };
+			const originalMode = globalConfig.executions.mode;
+			Object.assign(globalConfig, {
+				database: {
+					type: 'postgresdb',
+					postgresdb: { host: 'db.abc.eu-west-1.rds.amazonaws.com' },
+				},
+				queue: { bull: { redis: { host: 'n8n.abc.cache.amazonaws.com', clusterNodes: '' } } },
+			});
+			globalConfig.executions.mode = 'queue';
+			dbConnection.getManagedPostgresMarkers.mockResolvedValue({
+				aurora: false,
+				rds: true,
+				azure: false,
+				cloudSql: false,
+			});
+			try {
+				eventService.emit('server-started');
+				await flushPromises();
+			} finally {
+				Object.assign(globalConfig, original);
+				globalConfig.executions.mode = originalMode;
+			}
+
+			expect(telemetry.identify).toHaveBeenCalledWith(
+				expect.objectContaining({ db_vendor: 'rds', redis_vendor: 'elasticache' }),
+			);
+			expect(JSON.stringify(telemetry.identify.mock.calls)).not.toContain('amazonaws.com');
+		});
+
+		it('should leave out both vendors on SQLite without queue mode', async () => {
+			eventService.emit('server-started');
+			await flushPromises();
+
+			const [info] = telemetry.identify.mock.calls[0];
+			expect(info?.db_vendor).toBeUndefined();
+			expect(info?.redis_vendor).toBeUndefined();
 		});
 
 		it('should leave out the Kubernetes kind outside Kubernetes', async () => {
@@ -5159,6 +5293,21 @@ describe('TelemetryEventRelay', () => {
 			expect(telemetry.track).toHaveBeenCalledWith('User updated instance policies', {
 				user_id: 'user-redaction',
 				data_redaction_enforcement_floor: 'all',
+			});
+		});
+
+		it('should track public_api_rate_limit update', () => {
+			const event: RelayEventMap['instance-policies-updated'] = {
+				user: { id: 'user-rate-limit' },
+				settingName: 'public_api_rate_limit',
+				value: true,
+			};
+
+			eventService.emit('instance-policies-updated', event);
+
+			expect(telemetry.track).toHaveBeenCalledWith('User updated instance policies', {
+				user_id: 'user-rate-limit',
+				public_api_rate_limit: true,
 			});
 		});
 	});

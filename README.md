@@ -1,4 +1,4 @@
-![横幅图片](https://user-images.githubusercontent.com/10284570/173569848-c624317f-42b1-45a6-ab09-f0ea3c247648.png)
+![横幅图片](https://raw.githubusercontent.com/n8n-io/n8n/master/assets/readme-banner.jpg)
 
 # n8n —— AI 智能体与工作流自动化平台
 

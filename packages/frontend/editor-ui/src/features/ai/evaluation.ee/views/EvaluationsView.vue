@@ -235,7 +235,7 @@ watch(runningTestRun, (run) => {
 										:max="parallelEvalStore.maxConcurrency"
 										:step="1"
 										show-stops
-										:show-tooltip="false"
+										:label="locale.baseText('evaluation.runInParallel.popover.title')"
 										:class="$style.concurrencySlider"
 										data-test-id="run-in-parallel-concurrency"
 									/>

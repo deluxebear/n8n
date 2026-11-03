@@ -13,7 +13,7 @@ import {
 	type IOAuth2Options,
 	type IRequestOptions,
 } from 'n8n-workflow';
-import { Stream, type Readable } from 'stream';
+import { Readable, Stream } from 'stream';
 import type { SecureContextOptions } from 'tls';
 
 import type { HttpSslAuthCredentials } from './interfaces';
@@ -297,27 +297,23 @@ export const prepareRequestBody = async (
 		}, Promise.resolve({}));
 	} else if (bodyType === 'multipart-form-data' && version >= 4.2) {
 		const formData = new FormData();
-		const binaryStreams: Readable[] = [];
+		const streams: Readable[] = [];
 
 		for (const parameter of parameters) {
 			if (parameter.parameterType === 'formBinaryData') {
 				const entry = await defaultReducer({}, parameter);
 				const key = Object.keys(entry)[0];
 				const data = entry[key] as { value: Buffer | Readable; options: FormData.AppendOptions };
-				if (!Buffer.isBuffer(data.value)) binaryStreams.push(data.value);
 				formData.append(key, data.value, data.options);
+				if (data.value instanceof Readable) streams.push(data.value);
 				continue;
 			}
 
 			formData.append(parameter.name, parameter.value);
 		}
 
-		const destroy = formData.destroy.bind(formData);
-		formData.destroy = (error?: Error) => {
-			for (const stream of binaryStreams) stream.destroy(error);
-			return destroy(error);
-		};
-
+		// `FormData.destroy()` drops the appended streams without destroying them.
+		formData.once('close', () => streams.forEach((stream) => stream.destroy()));
 		return formData;
 	} else {
 		return await reduceAsync(parameters, defaultReducer);

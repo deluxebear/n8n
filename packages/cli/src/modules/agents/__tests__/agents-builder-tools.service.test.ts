@@ -31,19 +31,16 @@ import type { NodeTypes } from '@/node-types';
 import type { AiGatewayService } from '@/services/ai-gateway.service';
 import type { AiService } from '@/services/ai.service';
 import type { CollaborationService } from '@/collaboration/collaboration.service';
-import type { DynamicNodeParametersService } from '@/services/dynamic-node-parameters.service';
 import type { FreeAiCreditsService } from '@/services/free-ai-credits.service';
 import type { Telemetry } from '@/telemetry';
 
 import type { AgentConfigService } from '../agent-config.service';
 import type { AgentCustomToolsService } from '../agent-custom-tools.service';
 import type { AgentIntegrationPersistenceService } from '../agent-integration-persistence.service';
-import type { InstanceAiAgentContextAdapterService } from '../instance-ai-agent-context.adapter';
 import type { AgentPublishService } from '../agent-publish.service';
 import type { AgentSkillsService } from '../agent-skills.service';
 import type { AgentTaskService } from '../agent-task.service';
 import type { AgentTestRunService } from '../agent-test-run.service';
-import type { AgentsToolsService } from '../agents-tools.service';
 import type { AgentsService } from '../agents.service';
 import { AgentsBuilderToolsService } from '../builder/agents-builder-tools.service';
 import type { BuilderModelLiveLookupService } from '../builder/builder-model-live-lookup.service';
@@ -51,9 +48,9 @@ import { BUILDER_TOOLS } from '../builder/builder-tool-names';
 import type { Agent, ProjectAgent } from '../entities/agent.entity';
 import type { AgentSecureRuntime } from '../runtime/agent-secure-runtime';
 import { getAgentConfigHash } from '../utils/agent-config-hash';
-import { SkillNameTakenError } from '../skills/skill-name-taken.error';
+import { SkillNameTakenError } from '@/modules/skills/skill-name-taken.error';
 import * as checkAccess from '@/permissions.ee/check-access';
-import type { InstanceAiCredentialService } from '@n8n/instance-ai';
+import type { BuilderCredentialService } from '../builder/builder-session';
 import { createAgentSkillRefsService } from './test-utils/stored-agent-config';
 
 const ctx = {
@@ -98,7 +95,6 @@ function makeService() {
 		versionId: 'v2',
 	}));
 	const secureRuntime = mock<AgentSecureRuntime>();
-	const agentsToolsService = mock<AgentsToolsService>();
 	const builderModelLiveLookupService = mock<BuilderModelLiveLookupService>();
 	const credentialTypes = mock<CredentialTypes>();
 	const mcpRegistryService = mock<McpRegistryService>();
@@ -106,15 +102,10 @@ function makeService() {
 	const agentPublishService = mock<AgentPublishService>();
 	const agentTestRunService = mock<AgentTestRunService>();
 	const telemetry = mock<Telemetry>();
-	const agentContextAdapter = mock<InstanceAiAgentContextAdapterService>();
-	agentContextAdapter.createReader.mockReturnValue({ lookup: vi.fn() });
 	const aiService = mock<AiService>();
 	aiService.isProxyEnabled.mockReturnValue(false);
-	const dynamicNodeParametersService = mock<DynamicNodeParametersService>();
 	const nodeTypes = mock<NodeTypes>();
-	agentsToolsService.getSharedTools.mockReturnValue([]);
 	credentialTypes.recognizes.mockReturnValue(true);
-	agentsToolsService.getSharedTools.mockReturnValue([]);
 	mcpRegistryService.getAll.mockResolvedValue([]);
 
 	const transport = mock<HttpTransport>();
@@ -124,14 +115,12 @@ function makeService() {
 	const collaborationService = mock<CollaborationService>();
 
 	const service = new AgentsBuilderToolsService(
-		mock(),
 		agentsService as unknown as AgentsService,
 		agentConfigService as unknown as AgentConfigService,
 		agentCustomToolsService as unknown as AgentCustomToolsService,
 		agentIntegrationPersistenceService as unknown as AgentIntegrationPersistenceService,
 		agentSkillsService as unknown as AgentSkillsService,
 		secureRuntime,
-		agentsToolsService,
 		builderModelLiveLookupService,
 		mcpRegistryService,
 		mock(),
@@ -142,11 +131,9 @@ function makeService() {
 		aiService,
 		mock<AiGatewayService>(),
 		outboundHttp,
-		dynamicNodeParametersService,
 		nodeTypes,
 		mock<FreeAiCreditsService>(),
 		telemetry,
-		agentContextAdapter,
 		collaborationService,
 		createAgentSkillRefsService(),
 	);
@@ -270,7 +257,7 @@ describe('AgentsBuilderToolsService', () => {
 	const agentId = 'agent-1';
 	const projectId = 'project-1';
 	const credentialProvider = mock<CredentialProvider>();
-	const credentialService = mock<InstanceAiCredentialService>();
+	const credentialService = mock<BuilderCredentialService>();
 	const user = mock<User>({ id: 'user-1' });
 
 	beforeEach(() => {
@@ -288,7 +275,7 @@ describe('AgentsBuilderToolsService', () => {
 				.json.find((tool) => tool.name === name)!;
 		}
 
-		it('uses Agent context instead of duplicate read tools', () => {
+		it('leaves context reads to host tools instead of duplicate read tools', () => {
 			const { service } = makeService();
 
 			const tools = service.getTools(
@@ -300,8 +287,8 @@ describe('AgentsBuilderToolsService', () => {
 			);
 			const toolNames = [...tools.json, ...tools.shared].map((tool) => tool.name);
 
-			expect(toolNames.filter((name) => name === 'agent-context')).toHaveLength(1);
 			for (const duplicate of [
+				'agent-context',
 				'read_config',
 				'read_skill',
 				'list_skills',
@@ -1172,7 +1159,7 @@ describe('AgentsBuilderToolsService', () => {
 				errors: [
 					expect.objectContaining({
 						path: '/tools/0/node/nodeParameters/teamId',
-						message: expect.stringContaining('agent_builder_get_resource_locator_options'),
+						message: expect.stringContaining('get_node_parameter_options'),
 					}),
 				],
 			});
@@ -1685,9 +1672,13 @@ describe('AgentsBuilderToolsService', () => {
 		});
 
 		describe('prompt caching defaults', () => {
-			it('agent_builder_write_config defaults prompt caching to enabled for a supported provider when omitted', async () => {
+			it.each([
+				'anthropic/claude-sonnet-4-5',
+				'openrouter/anthropic/claude-sonnet-4.5',
+				'google-vertex/claude-sonnet-4-5',
+			])('agent_builder_write_config enables caching for %s when omitted', async (model) => {
 				const { service, agentsService } = makeService();
-				const currentConfig = { ...baseConfig, integrations: [] };
+				const currentConfig = { ...baseConfig, model, integrations: [] };
 				// Explicitly disable web search so its own write-path normalizer
 				// doesn't add unrelated config/providerTools keys to the expectation.
 				const updatedConfig: AgentJsonConfig = {
@@ -1698,7 +1689,7 @@ describe('AgentsBuilderToolsService', () => {
 					...currentConfig,
 					config: { webSearch: { enabled: false }, promptCaching: { enabled: true } },
 				};
-				agentsService.findById.mockResolvedValue(makeAgent(baseConfig));
+				agentsService.findById.mockResolvedValue(makeAgent(currentConfig));
 				agentsService.updateConfig.mockResolvedValue({
 					config: normalizedConfig,
 					configHash: 'config-hash',
@@ -1726,7 +1717,11 @@ describe('AgentsBuilderToolsService', () => {
 				);
 			});
 
-			it('agent_builder_write_config strips prompt caching when switching to an unsupported provider', async () => {
+			it.each([
+				'google/gemini-2.5-flash',
+				'openrouter/openai/gpt-5',
+				'google-vertex/gemini-2.5-pro',
+			])('agent_builder_write_config strips caching when switching to %s', async (model) => {
 				const { service, agentsService } = makeService();
 				const baseAgent = {
 					...baseConfig,
@@ -1736,7 +1731,7 @@ describe('AgentsBuilderToolsService', () => {
 				const currentConfig = { ...baseAgent };
 				const updatedConfig: AgentJsonConfig = {
 					...currentConfig,
-					model: 'google/gemini-2.5-flash',
+					model,
 					credential: 'Google Key',
 				};
 				const { config: _droppedConfig, ...normalizedConfig } = updatedConfig;
@@ -1818,10 +1813,15 @@ describe('AgentsBuilderToolsService', () => {
 				);
 			});
 
-			it('agent_builder_write_config preserves an explicit Anthropic ttl', async () => {
+			it.each([
+				'anthropic/claude-sonnet-4-5',
+				'openrouter/anthropic/claude-sonnet-4.5',
+				'google-vertex/claude-sonnet-4-5',
+			])('agent_builder_write_config preserves the cache TTL for %s', async (model) => {
 				const { service, agentsService } = makeService();
 				const baseAgent = {
 					...baseConfig,
+					model,
 					integrations: [],
 					config: { promptCaching: { enabled: true, anthropic: { ttl: '5m' as const } } },
 				};
@@ -3389,15 +3389,10 @@ describe('AgentsBuilderToolsService', () => {
 		function getProbe(
 			service: AgentsBuilderToolsService,
 			resolve: (pinnedAgentId?: string) => Promise<string>,
+			providerFor = () => credentialProvider,
 		) {
 			return service
-				.getToolsForResolvedTarget(
-					resolve,
-					projectId,
-					() => credentialProvider,
-					credentialService,
-					user,
-				)
+				.getToolsForResolvedTarget(resolve, projectId, providerFor, credentialService, user)
 				.find((tool) => tool.name === 'probe')!;
 		}
 
@@ -3406,10 +3401,13 @@ describe('AgentsBuilderToolsService', () => {
 			makeTargetedTools(service);
 			let boundAgentId = 'agent-a';
 			const resolve = vi.fn(async (pinnedAgentId?: string) => pinnedAgentId ?? boundAgentId);
-			const probe = getProbe(service, resolve);
+			const providerFor = vi.fn(() => credentialProvider);
+			const probe = getProbe(service, resolve, providerFor);
 			const suspend = vi.fn().mockResolvedValue(undefined as never);
+			expect(providerFor).not.toHaveBeenCalled();
 
 			await probe.handler!({}, { ...ctx, suspend });
+			expect(providerFor).toHaveBeenCalledExactlyOnceWith('agent-a');
 
 			expect(suspend).toHaveBeenCalledWith(
 				{ ask: true },

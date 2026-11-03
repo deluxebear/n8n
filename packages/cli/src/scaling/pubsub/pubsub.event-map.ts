@@ -51,6 +51,10 @@ export type PubSubCommandMap = {
 
 	'reload-otel-config': never;
 	'reload-instance-ai-settings': never;
+	'self-healing-failure': {
+		workflowId: string;
+		executionId: string;
+	};
 	'reload-agents-settings': never;
 
 	// #region Community packages
@@ -154,6 +158,8 @@ export type PubSubCommandMap = {
 		surface?: 'preview' | 'n8n-chat' | 'system';
 		productionN8nChat?: boolean;
 	};
+
+	'cancel-agent-chat-foreground': PubSubCommandMap['cancel-agent-chat-execution'];
 
 	'relay-agent-message-queue-update': {
 		data: PushPayload<'agentMessageQueueUpdated'>;

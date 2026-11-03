@@ -16,7 +16,6 @@ import { CredentialsService } from '@/credentials/credentials.service';
 import {
 	AgentModificationTelemetryService,
 	diffAgentConfigParts,
-	isUnconfiguredAgent,
 	type AgentActor,
 } from './agent-modification-telemetry.service';
 import { AgentRuntimeCacheService } from './agent-runtime-cache.service';
@@ -28,7 +27,8 @@ import {
 	ChatIntegrationRegistry,
 	type AgentChatIntegration,
 } from './integrations/agent-chat-integration';
-import { N8nChatFlagService } from './integrations/platforms/n8n-chat-flag.service';
+import { N8nChatFlagService } from './integrations/platforms/n8n-chat/n8n-chat-flag.service';
+import { assertSingleConnections } from './integrations/single-connection';
 import { AgentRepository } from './repositories/agent.repository';
 import { createAgentCredentialProvider } from './utils/agent-credential-provider';
 import type { IntegrationRef } from './utils/agent-channel';
@@ -207,7 +207,6 @@ export class AgentIntegrationPersistenceService {
 		context: CredentialIntegrationMutationContext,
 	): void {
 		const config = agent.schema ? toAgentDocument(agent.schema, skillRefs) : null;
-		const wasUnconfigured = isUnconfiguredAgent(config, previousIntegrations);
 		this.modificationTelemetry.record({
 			agent,
 			config,
@@ -220,7 +219,6 @@ export class AgentIntegrationPersistenceService {
 				previousIntegrations,
 				agent.integrations ?? [],
 			),
-			wasUnconfigured,
 		});
 	}
 	private async applyIntegrationAttempt(
@@ -248,6 +246,7 @@ export class AgentIntegrationPersistenceService {
 		}
 
 		const integrations = projectIntegrations(current, { add, remove });
+		assertSingleConnections(this.chatIntegrationRegistry, integrations);
 		// A channel write keeps the skill refs as they are.
 		const skillRefs = await this.agentSkillRefs.refsForDraft(agent, {});
 		const written = await this.persistIntegrations(

@@ -190,6 +190,7 @@ export const processUsers = async (
 
 				if (existingUser) {
 					if (!linkExistingAccountsByEmail) return;
+
 					const hasChanges =
 						existingUser.firstName !== user.firstName || existingUser.lastName !== user.lastName;
 

@@ -13,6 +13,7 @@ import {
 import { publishAgent, revertAgentToPublished, unpublishAgent } from './useAgentApi';
 import { useAgentConfirmationModal } from './useAgentConfirmationModal';
 import { useAgentsN8nChatFlag } from './useAgentsN8nChatFlag';
+import { useAgentTelemetry } from './useAgentTelemetry';
 import { upsertProjectAgentsListCache } from './useProjectAgentsList';
 import type { AgentResource } from '../types';
 
@@ -46,6 +47,7 @@ export function useAgentPublish() {
 	const locale = useI18n();
 	const { showMessage, showError } = useToast();
 	const { openAgentConfirmationModal } = useAgentConfirmationModal();
+	const { trackRevertedChangesOnAgent } = useAgentTelemetry();
 
 	const publishing = ref(false);
 
@@ -112,6 +114,7 @@ export function useAgentPublish() {
 		publishing.value = true;
 		try {
 			const updated = await revertAgentToPublished(rootStore.restApiContext, projectId, agentId);
+			trackRevertedChangesOnAgent({ agentId });
 			upsertProjectAgentsListCache(projectId, updated);
 			showMessage({ title: locale.baseText('agents.publish.toast.reverted'), type: 'success' });
 			return updated;

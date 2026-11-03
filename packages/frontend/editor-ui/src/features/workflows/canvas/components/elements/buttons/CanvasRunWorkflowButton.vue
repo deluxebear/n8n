@@ -204,7 +204,7 @@ function onSelectTriggerNode(name: string) {
 			:class="$style.menu"
 			:items="actions"
 			:disabled="disabled"
-			placement="top"
+			placement="top-end"
 			:extra-popper-class="$style.menuPopper"
 			@select="onSelectTriggerNode"
 		>
@@ -285,7 +285,7 @@ function onSelectTriggerNode(name: string) {
 	}
 }
 
-.menu :global(.el-dropdown) {
+.menu {
 	height: 100%;
 }
 

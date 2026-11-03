@@ -89,14 +89,14 @@ const createLoadOptionsContext = (params: Record<string, Locator> = {}) => {
 	return context;
 };
 
-const createExecuteContext = (locators: Record<string, string>) => {
+const createExecuteContext = (locators: Record<string, string>, authentication = 'oAuth2') => {
 	const context = mockDeep<IExecuteFunctions>();
 	// Also satisfies the `'getInputData' in context` guard in getActiveCredentialType
 	context.getInputData.mockReturnValue([]);
 	context.getCredentials.mockResolvedValue({ host: HOST });
 	context.getNode.mockReturnValue(node);
 	context.getNodeParameter.mockImplementation((name: string, index: number) =>
-		name === 'authentication' ? 'oAuth2' : index === ITEM ? locators[name] : undefined,
+		name === 'authentication' ? authentication : index === ITEM ? locators[name] : undefined,
 	);
 	return context;
 };
@@ -640,6 +640,20 @@ describe('resolveLakebaseRestBase', () => {
 	});
 });
 
+describe('resolveLakebaseRestBase auth', () => {
+	it('refuses personal access token auth before any request', async () => {
+		const context = createExecuteContext(defaultLocators(), 'accessToken');
+
+		const promise = resolveLakebaseRestBase(context, 'spike-test', 'production');
+
+		await expect(promise).rejects.toBeInstanceOf(NodeOperationError);
+		await expect(promise).rejects.toMatchObject({
+			message: 'Lakebase requires OAuth2 authentication',
+		});
+		expect(apiMock(context)).not.toHaveBeenCalled();
+	});
+});
+
 describe('resolveLakebaseRestBase memo', () => {
 	it('resolves each project and branch pair once per context', async () => {
 		const context = createExecuteContext(defaultLocators());
@@ -671,6 +685,18 @@ describe('resolveLakebaseRestBase memo', () => {
 });
 
 describe('resolveLakebaseSchemaUrl', () => {
+	it('refuses personal access token auth before any request', async () => {
+		const context = createExecuteContext(defaultLocators(), 'accessToken');
+
+		const promise = resolveLakebaseSchemaUrl(context, ITEM);
+
+		await expect(promise).rejects.toBeInstanceOf(NodeOperationError);
+		await expect(promise).rejects.toMatchObject({
+			message: 'Lakebase requires OAuth2 authentication',
+		});
+		expect(apiMock(context)).not.toHaveBeenCalled();
+	});
+
 	it('reads the four locators of the item and returns the encoded schema URL', async () => {
 		const context = createExecuteContext({ ...defaultLocators(), lakebaseSchema: 'my schema' });
 		apiMock(context).mockResolvedValueOnce(endpointsResponse);

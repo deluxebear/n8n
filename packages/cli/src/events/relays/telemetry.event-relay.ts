@@ -61,6 +61,7 @@ import { NodeTypes } from '@/node-types';
 import { PostHogClient } from '@/posthog';
 import { OwnershipService } from '@/services/ownership.service';
 import { getCpuLimit, getMemoryLimit } from '@/utils/container-limits';
+import { detectDbVendor, detectRedisVendor } from '@/utils/detect-managed-services';
 import { detectKubernetesProvider, detectRuntime } from '@/utils/detect-runtime';
 
 import { EventRelay } from './event-relay';
@@ -238,6 +239,8 @@ export class TelemetryEventRelay extends EventRelay {
 			'team-project-deleted': (event) => this.teamProjectDeleted(event),
 			'team-project-created': (event) => this.teamProjectCreated(event),
 			'source-control-settings-updated': (event) => this.sourceControlSettingsUpdated(event),
+			'source-control-environments-version-switched': (event) =>
+				this.sourceControlEnvironmentsVersionSwitched(event),
 			'source-control-user-started-pull-ui': (event) => this.sourceControlUserStartedPullUi(event),
 			'source-control-user-finished-pull-ui': (event) =>
 				this.sourceControlUserFinishedPullUi(event),
@@ -332,6 +335,8 @@ export class TelemetryEventRelay extends EventRelay {
 			'user-deleted': (event) => this.userDeleted(event),
 			'user-invited': (event) => this.userInvited(event),
 			'user-signed-up': (event) => this.userSignedUp(event),
+			'user-mfa-enabled': (event) => this.userMfaEnabled(event),
+			'user-mfa-disabled': (event) => this.userMfaDisabled(event),
 			'user-submitted-personalization-survey': (event) =>
 				this.userSubmittedPersonalizationSurvey(event),
 			'email-failed': (event) => this.emailFailed(event),
@@ -357,6 +362,7 @@ export class TelemetryEventRelay extends EventRelay {
 				this.instanceAiMcpRegistryConnectionDeleted(event),
 			'hitl-response-actioned': (event) => this.hitlResponseActioned(event),
 			'runner-disconnected': (event) => this.runnerDisconnected(event),
+			'memory-guard-execution-stopped': (event) => this.memoryGuardExecutionStopped(event),
 		});
 	}
 
@@ -462,6 +468,18 @@ export class TelemetryEventRelay extends EventRelay {
 			connected,
 			connection_type: connectionType,
 		});
+	}
+
+	private sourceControlEnvironmentsVersionSwitched({
+		userId,
+		version,
+	}: RelayEventMap['source-control-environments-version-switched']) {
+		this.telemetry.track(
+			version === 'v2'
+				? TELEMETRY_EVENT.PROMOTIONS.USER_SWITCHED_TO_ENVIRONMENTS_V2
+				: TELEMETRY_EVENT.PROMOTIONS.USER_SWITCHED_BACK_TO_ENVIRONMENTS_V1,
+			{ user_id: userId },
+		);
 	}
 
 	private sourceControlUserStartedPullUi({
@@ -1431,6 +1449,7 @@ export class TelemetryEventRelay extends EventRelay {
 			folders_removed: counts.folders.removed,
 			credentials_matched: counts.credentials.matched,
 			credentials_created: counts.credentials.created,
+			credentials_updated: counts.credentials.updated,
 			credentials_required: counts.credentials.requirements,
 			data_tables_matched: counts.dataTables.matched,
 			data_tables_created: counts.dataTables.created,
@@ -1838,11 +1857,27 @@ export class TelemetryEventRelay extends EventRelay {
 		const runtime = detectRuntime(process.env, this.instanceSettings.isDocker);
 		const memoryLimit = getMemoryLimit();
 		const cpu = getCpuLimit();
+		const dbVendor =
+			this.globalConfig.database.type === 'postgresdb'
+				? detectDbVendor(
+						this.globalConfig.database.postgresdb.host,
+						await this.dbConnection.getManagedPostgresMarkers(),
+					)
+				: undefined;
+		const redisVendor =
+			this.globalConfig.executions.mode === 'queue'
+				? detectRedisVendor(
+						this.globalConfig.queue.bull.redis.host,
+						this.globalConfig.queue.bull.redis.clusterNodes,
+					)
+				: undefined;
 
 		const info = {
 			version_cli: N8N_VERSION,
 			db_type: this.globalConfig.database.type,
 			db_version: dbVersion,
+			db_vendor: dbVendor,
+			redis_vendor: redisVendor,
 			n8n_version_notifications_enabled: this.globalConfig.versionNotifications.enabled,
 			n8n_disable_production_main_process:
 				this.globalConfig.endpoints.disableProductionWebhooksOnMainProcess,
@@ -2090,6 +2125,23 @@ export class TelemetryEventRelay extends EventRelay {
 		this.telemetry.track(TELEMETRY_EVENT.PLATFORM.TASK_RUNNER_DISCONNECTED, { reason, mode });
 	}
 
+	private memoryGuardExecutionStopped(event: RelayEventMap['memory-guard-execution-stopped']) {
+		this.telemetry.track(TELEMETRY_EVENT.PLATFORM.MEMORY_GUARD_STOPPED_EXECUTION, {
+			workflow_id: event.workflowId,
+			execution_mode: event.mode,
+			reason: event.reason,
+			running_node_type: event.runningNodeType,
+			largest_data_node_type: event.largestDataNodeType,
+			estimated_bytes: event.estimatedBytes,
+			memory_used_bytes: event.memoryUsedBytes,
+			memory_limit_bytes: event.memoryLimitBytes,
+			freed_memory: event.freedMemory,
+			workflow_deactivation_started: event.workflowDeactivationStarted,
+		});
+		// An OOM kill can follow a stop within the flush interval, so send the event now.
+		void this.telemetry.flushQueue();
+	}
+
 	private async instanceOwnerSetup({ userId }: RelayEventMap['instance-owner-setup']) {
 		// Attach owner to instance group on telemetry. PostHog also gets the instance
 		// facts now: the startup update skipped them while no owner existed.
@@ -2301,6 +2353,14 @@ export class TelemetryEventRelay extends EventRelay {
 		});
 
 		this.telemetry.track('User signed up', payload);
+	}
+
+	private userMfaEnabled({ user }: RelayEventMap['user-mfa-enabled']) {
+		this.telemetry.track(TELEMETRY_EVENT.AUTH.USER_ENABLED_MFA, { user_id: user.id });
+	}
+
+	private userMfaDisabled({ user }: RelayEventMap['user-mfa-disabled']) {
+		this.telemetry.track(TELEMETRY_EVENT.AUTH.USER_DISABLED_MFA, { user_id: user.id });
 	}
 
 	private userSubmittedPersonalizationSurvey({

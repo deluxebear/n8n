@@ -63,12 +63,11 @@ import {
 	summarizeSubWorkflowRedaction,
 } from 'n8n-workflow';
 
-import type { PrepareWorkflowAgentForEval } from './modules/agents/agent-runtime-instrumentation';
+import type { PrepareWorkflowAgentForEval } from './modules/agents/evaluation/agent-evaluation.contracts';
 import type { WorkflowAgentRunOptions } from './modules/agents/agent-workflow-execution.service';
 import { createWorkflowAgentStreamObserver } from './modules/agents/workflow-agent-stream';
 
 import { ActiveExecutions } from '@/active-executions';
-import { isCredSharingEnabled } from '@/constants/credential-sharing';
 import { CredentialsHelper } from '@/credentials-helper';
 import { PreExecuteBlockedError } from '@/errors/pre-execute-blocked.error';
 import type { AiEventPayload } from '@/events/maps/ai.event-map';
@@ -257,8 +256,8 @@ export async function getPublishedWorkflowData(
 		};
 	}
 
-	throw new UnexpectedError('Workflow is not active and cannot be executed.', {
-		extra: { workflowId: workflowInfo.id },
+	throw new OperationalError('Workflow is not active and cannot be executed.', {
+		extra: { workflowId: workflowInfo.id, parentWorkflowId },
 	});
 }
 
@@ -324,8 +323,12 @@ export async function executeWorkflow(
 	const activeExecutions = Container.get(ActiveExecutions);
 
 	// Use draft sub-workflows for manual/chat executions to enable
-	// iterating on sub-workflows without requiring them to be published
-	const useDraftVersion = isManualOrChatExecution(options.executionMode);
+	// iterating on sub-workflows without requiring them to be published.
+	// A nested sub-workflow's own parent runs as 'integrated', so read the mode
+	// of the root execution: every level below a manual run uses drafts.
+	const useDraftVersion = isManualOrChatExecution(
+		additionalData.rootExecutionMode ?? options.executionMode,
+	);
 
 	const workflowData =
 		options.loadedWorkflowData ??
@@ -618,12 +621,15 @@ async function startExecution(
 	});
 
 	const startTime = Date.now();
+	// A "library" sub-workflow can opt out of passing its own redaction to its caller. What it
+	// received from its own sub-workflows always passes up.
+	const includeOwn = workflowData.settings?.redactCallerExecutions !== false;
 
 	// Reported to the caller so its redaction covers this run's output: the parent's own
 	// nodes do not reference these credentials.
-	const workflowCredentialIds = isCredSharingEnabled()
-		? Container.get(CredentialsPermissionChecker).getCredentialIdsForNodes(workflowData.nodes)
-		: [];
+	const workflowCredentialIds = Container.get(
+		CredentialsPermissionChecker,
+	).getCredentialIdsForNodes(workflowData.nodes);
 
 	let hooks: ExecutionLifecycleHooks | undefined;
 	let callerAllowed = false;
@@ -836,7 +842,7 @@ async function startExecution(
 				),
 				summarizeDynamicCredentialsUsage(runData.executionData, workflowCredentialIds),
 			),
-			summarizeSubWorkflowRedaction(runData.executionData, { includeOwn: true }),
+			summarizeSubWorkflowRedaction(runData.executionData, { includeOwn }),
 		);
 	}
 
@@ -856,7 +862,7 @@ async function startExecution(
 			// Report private-credential usage to the caller (detached runs return earlier, skipping this).
 			...summarizeDynamicCredentialsUsage(data.data, workflowCredentialIds),
 			// The caller keeps a copy of the output above, so it must redact what this run redacts.
-			subWorkflowRedaction: summarizeSubWorkflowRedaction(data.data, { includeOwn: true }),
+			subWorkflowRedaction: summarizeSubWorkflowRedaction(data.data, { includeOwn }),
 		};
 	}
 	activeExecutions.finalizeExecution(executionId, data);
@@ -880,7 +886,7 @@ async function startExecution(
 			),
 			summarizeDynamicCredentialsUsage(data.data, workflowCredentialIds),
 		),
-		summarizeSubWorkflowRedaction(data.data, { includeOwn: true }),
+		summarizeSubWorkflowRedaction(data.data, { includeOwn }),
 	);
 }
 
