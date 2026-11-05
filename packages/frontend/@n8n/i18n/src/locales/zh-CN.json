@@ -11690,5 +11690,8 @@
 	"selfHealing.config.noWorkflows": "尚未选择工作流。",
 	"selfHealing.config.noReviewers": "尚无审核者。",
 	"selfHealing.config.removeWorkflow": "移除工作流",
-	"selfHealing.config.removeReviewer": "移除审核者"
+	"selfHealing.config.removeReviewer": "移除审核者",
+	"settings.migrationReport.slowLoading.title": "仍在扫描您的工作流…",
+	"settings.migrationReport.slowLoading.description": "如果实例中有大量工作流，扫描可能需要一些时间。",
+	"settings.migrationReport.detail.filters.showArchived": "显示已归档的工作流"
 }
