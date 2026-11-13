@@ -20,7 +20,6 @@ import { BaseRepository } from './base-repository';
 import { FolderRepository } from './folder.repository';
 import { SharedWorkflowRepository } from './shared-workflow.repository';
 import { runWorkflowContentWrite } from './workflow-content-write-context';
-import { WorkflowHistoryRepository } from './workflow-history.repository';
 import {
 	WebhookEntity,
 	TagEntity,
@@ -120,7 +119,6 @@ export class WorkflowRepository extends BaseRepository<WorkflowEntity> {
 		private readonly globalConfig: GlobalConfig,
 		private readonly folderRepository: FolderRepository,
 		private readonly sharedWorkflowRepository: SharedWorkflowRepository,
-		private readonly workflowHistoryRepository: WorkflowHistoryRepository,
 		transactionRunner: TransactionRunner,
 	) {
 		super(WorkflowEntity, dataSource.manager, transactionRunner);
@@ -1072,6 +1070,7 @@ export class WorkflowRepository extends BaseRepository<WorkflowEntity> {
 			onlySharedWithMe?: boolean;
 		},
 		options: WorkflowListQueryOptions = {},
+		accessibleProjectIds?: string[],
 	) {
 		if (
 			options.filter?.parentFolderId &&
@@ -1091,8 +1090,18 @@ export class WorkflowRepository extends BaseRepository<WorkflowEntity> {
 		}
 
 		const [workflowsAndFolders, count] = await Promise.all([
-			this.getWorkflowsAndFoldersUnionWithSharingSubquery(user, sharingOptions, options),
-			this.getWorkflowsAndFoldersCountWithSharingSubquery(user, sharingOptions, options),
+			this.getWorkflowsAndFoldersUnionWithSharingSubquery(
+				user,
+				sharingOptions,
+				options,
+				accessibleProjectIds,
+			),
+			this.getWorkflowsAndFoldersCountWithSharingSubquery(
+				user,
+				sharingOptions,
+				options,
+				accessibleProjectIds,
+			),
 		]);
 
 		const isArchived =
@@ -1119,9 +1128,15 @@ export class WorkflowRepository extends BaseRepository<WorkflowEntity> {
 			onlySharedWithMe?: boolean;
 		},
 		options: WorkflowListQueryOptions = {},
+		accessibleProjectIds?: string[],
 	) {
 		const { baseQuery, sortByColumn, sortByDirection } =
-			this.buildBaseUnionQueryWithSharingSubquery(user, sharingOptions, options);
+			this.buildBaseUnionQueryWithSharingSubquery(
+				user,
+				sharingOptions,
+				options,
+				accessibleProjectIds,
+			);
 
 		const query = this.buildUnionQuery(baseQuery, {
 			sortByColumn,
@@ -1147,6 +1162,7 @@ export class WorkflowRepository extends BaseRepository<WorkflowEntity> {
 			onlySharedWithMe?: boolean;
 		},
 		options: WorkflowListQueryOptions = {},
+		accessibleProjectIds?: string[],
 	) {
 		const { skip, take, ...baseQueryParameters } = options;
 
@@ -1154,6 +1170,7 @@ export class WorkflowRepository extends BaseRepository<WorkflowEntity> {
 			user,
 			sharingOptions,
 			baseQueryParameters,
+			accessibleProjectIds,
 		);
 
 		const response = await baseQuery
@@ -1175,6 +1192,7 @@ export class WorkflowRepository extends BaseRepository<WorkflowEntity> {
 			onlySharedWithMe?: boolean;
 		},
 		options: WorkflowListQueryOptions = {},
+		accessibleProjectIds?: string[],
 	) {
 		// Common fields for both folders and workflows
 		const commonFields = {
@@ -1219,6 +1237,18 @@ export class WorkflowRepository extends BaseRepository<WorkflowEntity> {
 			.getManyQuery(folderQueryParameters)
 			.addSelect('NULL', 'description') // Add NULL for description in folders
 			.addSelect("'folder'", 'resource');
+
+		// Restrict folders to projects in which the user can list folders.
+		// When undefined (global access), no filtering is applied.
+		if (accessibleProjectIds !== undefined) {
+			if (accessibleProjectIds.length > 0) {
+				foldersQuery.andWhere('folder.projectId IN (:...accessibleProjectIds)', {
+					accessibleProjectIds,
+				});
+			} else {
+				foldersQuery.andWhere('1 = 0');
+			}
+		}
 
 		const workflowsQuery = this.getManyQueryWithSharingSubquery(
 			user,
@@ -2017,52 +2047,6 @@ export class WorkflowRepository extends BaseRepository<WorkflowEntity> {
 		}
 	}
 
-	/**
-	 * Publish a specific version of a workflow
-	 * @param workflowId - The ID of the workflow
-	 * @param versionId - The ID of the version to publish (optional; if not provided, uses the current version)
-	 * */
-	async publishVersion(workflowId: string, versionId?: string) {
-		const workflow = await this.findOne({
-			where: { id: workflowId },
-			select: ['id', 'versionId', 'isArchived'],
-		});
-
-		if (!workflow) {
-			throw new UserError(`Workflow "${workflowId}" not found.`);
-		}
-
-		if (workflow.isArchived) {
-			throw new UserError('Cannot publish archived Workflow', {
-				extra: { workflowId },
-			});
-		}
-
-		const versionIdToPublish = versionId ?? workflow.versionId;
-
-		const version = await this.workflowHistoryRepository.findOneBy({
-			workflowId,
-			versionId: versionIdToPublish,
-		});
-		if (!version) {
-			throw new UserError(
-				`Version "${versionIdToPublish}" not found for workflow "${workflowId}".`,
-			);
-		}
-
-		return await this.update(
-			{ id: workflowId },
-			{ active: true, activeVersionId: versionIdToPublish },
-		);
-	}
-
-	async unpublishAll() {
-		return await this.update(
-			{ activeVersionId: Not(IsNull()) },
-			{ active: false, activeVersionId: null },
-		);
-	}
-
 	async findByActiveState(activeState: boolean) {
 		return await this.findBy({ activeVersionId: activeState ? Not(IsNull()) : IsNull() });
 	}
@@ -2132,11 +2116,13 @@ export class WorkflowRepository extends BaseRepository<WorkflowEntity> {
 
 		// Only select columns needed for indexing to avoid loading large unused
 		// JSON columns (connections, staticData, pinData) that can cause OOM.
+		// `settings` holds the error workflow, which the indexer records.
 		qb.select([
 			'workflow.id',
 			'workflow.versionCounter',
 			'workflow.activeVersionId',
 			'workflow.nodes',
+			'workflow.settings',
 		]);
 
 		qb.leftJoin(
@@ -2192,8 +2178,13 @@ export class WorkflowRepository extends BaseRepository<WorkflowEntity> {
 		// Only select columns needed for indexing to avoid loading large unused
 		// JSON columns (connections, staticData, pinData) that can cause OOM.
 		// For published version indexing we need the published version's nodes
-		// (from activeVersion), not the draft nodes.
-		qb.select(['workflow.id', 'workflow.versionCounter', 'workflow.activeVersionId']);
+		// (from activeVersion), not the draft nodes. `settings` holds the error workflow.
+		qb.select([
+			'workflow.id',
+			'workflow.versionCounter',
+			'workflow.activeVersionId',
+			'workflow.settings',
+		]);
 
 		// Left join to find matching published version dependencies
 		qb.leftJoin(

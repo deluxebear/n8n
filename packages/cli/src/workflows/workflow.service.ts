@@ -8,6 +8,7 @@ import type {
 import { LicenseState, Logger } from '@n8n/backend-common';
 import {
 	EventService,
+	ProjectScopeService,
 	RoleService,
 	RestrictedNodeTypesProviderProxy,
 	WorkflowMutationHooksProxy,
@@ -88,6 +89,7 @@ import { ExecutionPersistence } from '@/executions/execution-persistence';
 import { ExternalHooks, toWorkflowLifecycleHookActor } from '@/external-hooks';
 import { validateEntity } from '@/generic-helpers';
 import { RedactionEnforcementService } from '@/modules/redaction/redaction-enforcement.service';
+import { WorkflowIndexService } from '@/modules/workflow-index/workflow-index.service';
 import { NodeTypes } from '@/node-types';
 import { userHasScopes } from '@/permissions.ee/check-access';
 import { enforceWorkflowPublishPolicy } from '@/policy/enforce-workflow-publish';
@@ -144,6 +146,10 @@ type WorkflowUpdateOptions = {
 	allowUnresolvedErrorWorkflow?: boolean;
 	/** The history version this update restores, so its nodes keep their credentials. */
 	restoredFromVersionId?: string;
+	/** What happens when a read-only node has edits. `restore` keeps the stored node `reject` fails the save. */
+	readOnlyNodeEdits?: 'restore' | 'reject';
+	/** Node fields the caller's payload never carries. The credential guard strips these when comparing with a saved node. */
+	unsentNodeFields?: readonly string[];
 };
 
 type PreparedWorkflowUpdate = {
@@ -205,6 +211,8 @@ export class WorkflowService {
 		private readonly errorWorkflowValidationService: ErrorWorkflowValidationService,
 		private readonly restrictedNodeTypesProvider: RestrictedNodeTypesProviderProxy,
 		private readonly deprecatedNodesValidationService: DeprecatedNodesValidationService,
+		private readonly projectScopeService: ProjectScopeService,
+		private readonly workflowIndexService: WorkflowIndexService,
 	) {}
 
 	/**
@@ -324,11 +332,15 @@ export class WorkflowService {
 
 		// Use the new subquery-based repository methods
 		if (includeFolders) {
+			// `null` means global access, so the folder half stays unrestricted.
+			const folderProjectIds = await this.projectScopeService.getProjectIds(user, ['folder:list']);
+
 			[workflowsAndFolders, count] =
 				await this.workflowRepository.getWorkflowsAndFoldersWithCountWithSharingSubquery(
 					user,
 					sharingOptions,
 					listOptions,
+					folderProjectIds ?? undefined,
 				);
 
 			workflows = workflowsAndFolders.filter((wf) => wf.resource === 'workflow');
@@ -585,6 +597,8 @@ export class WorkflowService {
 			allowArchivedUpdate = false,
 			allowUnresolvedErrorWorkflow = false,
 			restoredFromVersionId,
+			readOnlyNodeEdits = 'restore',
+			unsentNodeFields = [],
 		} = options;
 		const workflow = await this.workflowFinderService.findWorkflowForUser(workflowId, user, [
 			'workflow:update',
@@ -628,7 +642,8 @@ export class WorkflowService {
 
 		// Central credential guard for every workflow write path. With sharing
 		// enabled, reject new nodes that reference credentials the acting user
-		// cannot access and revert edits to existing read-only credential nodes.
+		// cannot access and revert edits to existing read-only credential nodes. A caller that
+		// sets `readOnlyNodeEdits` to `reject` fails the save instead, because it cannot see the restore.
 		// Runs after replaceInvalidCredentials so old-format/name references are
 		// already resolved to IDs before the check.
 		// Loaded lazily to avoid a circular import (workflow.service.ee pulls in
@@ -660,6 +675,7 @@ export class WorkflowService {
 				workflowId,
 				user,
 				restoredNodes,
+				{ readOnlyNodeEdits, unsentNodeFields },
 			);
 		}
 
@@ -1562,6 +1578,8 @@ export class WorkflowService {
 		}
 
 		await this._teardownActiveVersion(workflow, deactivatedVersionId, null);
+
+		await this.workflowIndexService.removePublishedDependenciesForWorkflow(workflowId);
 	}
 
 	/**
@@ -1841,20 +1859,8 @@ export class WorkflowService {
 			await this._detectConflicts(workflow, options.expectedChecksum);
 		}
 
-		const activeVersionId = workflow.activeVersionId;
-		if (activeVersionId !== null) {
-			if (this.globalConfig.workflows.useWorkflowPublicationService) {
-				await this._unpublishViaOutbox(user.id, workflowId, activeVersionId, workflow.updatedAt);
-			} else {
-				await this.activeWorkflowManager.remove(workflowId);
-
-				await this.workflowPublishHistoryRepository.addRecord({
-					workflowId,
-					versionId: activeVersionId,
-					event: 'deactivated',
-					userId: user.id,
-				});
-			}
+		if (workflow.activeVersionId !== null) {
+			await this._teardownActiveVersion(workflow, workflow.activeVersionId, user.id);
 		}
 
 		const versionId = uuid();

@@ -29,7 +29,9 @@ import type {
 	WorkflowImportContext,
 	WorkflowImportPlan,
 	WorkflowPlanItem,
+	WorkflowImportDecision,
 } from './workflow-import.types';
+import { decidePlannedPublishingAction } from './workflow-publishing-policy';
 import { LayoutConflictPolicy } from '../../n8n-packages.types';
 import type {
 	ImportBindingMap,
@@ -91,18 +93,22 @@ export class WorkflowImporter {
 		for (const workflow of prepared) {
 			const existing = existingBySourceWorkflowId.get(workflow.sourceWorkflowId) ?? null;
 			if (existing && ambiguousSourceIds.has(workflow.sourceWorkflowId)) {
-				items.push({ action: 'skip', ...workflow, existing });
+				items.push({ action: 'skip', ...workflow, existing, publishingAction: 'noop' });
 				continue;
 			}
 			const { action, blocked } = decideImportConflictAction(
-				options.workflowConflictPolicy,
+				options.conflictPolicy,
 				existing !== null,
 			);
 
-			const item = toPlanItem(workflow, existing, action, options.workflowIdPolicy);
+			const decision = toPlanItem(workflow, existing, action, options.idPolicy);
+			const item: WorkflowPlanItem = {
+				...decision,
+				publishingAction: decidePlannedPublishingAction(options.publishingPolicy, decision),
+			};
 			items.push(item);
 
-			if (item.action === 'create' && options.workflowIdPolicy === 'source' && !blocked) {
+			if (item.action === 'create' && !blocked) {
 				sourceCreateIds.push(item.decidedId);
 			}
 
@@ -395,7 +401,7 @@ function toPlanItem(
 	existing: WorkflowEntity | null,
 	action: ImportDecision['action'],
 	idPolicy: WorkflowIdPolicy,
-): WorkflowPlanItem {
+): WorkflowImportDecision {
 	if (existing === null) {
 		return {
 			action: 'create',

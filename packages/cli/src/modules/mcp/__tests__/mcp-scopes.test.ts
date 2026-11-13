@@ -11,6 +11,7 @@ import {
 	ExecutionRedactionServiceProxy,
 	WorkflowPublishedDataService,
 	AiPreferenceService,
+	CredentialsFinderService,
 } from '@n8n/backend-services';
 import { mockInstance, mockLogger } from '@n8n/backend-test-utils';
 import { EndpointsConfig, ExecutionsConfig, GlobalConfig, WorkflowsConfig } from '@n8n/config';
@@ -44,10 +45,8 @@ import { CredentialsService } from '@/credentials/credentials.service';
 import { ExecutionListService } from '@/executions/execution-list.service';
 
 import { ExecutionService } from '@/executions/execution.service';
-import { SkillService } from '@/modules/skills/skill.service';
-import { SkillsApiService } from '@/modules/skills/skills-api.service';
-import { SkillAgentsProxy } from '@/modules/skills/skill-agents-proxy.service';
-import { DataTableProxyService } from '@/modules/data-table/data-table-proxy.service';
+import { SkillService, SkillsGate } from '@/modules/skills';
+import { DataTableProxyService } from '@n8n/backend-module-data-table';
 import { InstanceContextService } from '@/modules/instance-ai/instance-context.service';
 import {
 	EMPTY_INSTANCE_CONTEXT_TEXT,
@@ -86,6 +85,7 @@ const mcpFeatureFlags = (overrides: Partial<McpFeatureFlags> = {}): McpFeatureFl
 	// On by default so the drift guards below cover `get_user_preferences`. Its own
 	// registration tests set it explicitly either way.
 	aiPreferencesEnabled: true,
+	credentialDescriptionsEnabled: true,
 	...overrides,
 });
 
@@ -109,6 +109,13 @@ const getRegisteredToolNames = (server: unknown): Set<string> =>
 	new Set(Object.keys((server as { _registeredTools: Record<string, unknown> })._registeredTools));
 
 describe('getAllowedToolNames', () => {
+	it('keeps credential update and read grants separate', () => {
+		expect(getAllowedToolNames(['credential:update'])).toEqual(
+			new Set(['update_credential_description']),
+		);
+		expect(getAllowedToolNames(['credential:read'])).not.toContain('update_credential_description');
+	});
+
 	it('returns undefined for non-scope-bearing credentials (full access)', () => {
 		expect(getAllowedToolNames(undefined)).toBeUndefined();
 	});
@@ -195,6 +202,7 @@ describe('McpService scope enforcement', () => {
 			mockInstance(WorkflowService),
 			mockInstance(UrlService),
 			mockInstance(CredentialsService),
+			mockInstance(CredentialsFinderService),
 			mockInstance(ActiveExecutions),
 			mockInstance(GlobalConfig, {
 				endpoints: {
@@ -255,7 +263,7 @@ describe('McpService scope enforcement', () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks();
-		mockInstance(SkillAgentsProxy, { hasProvider: false });
+		mockInstance(SkillsGate, { isEnabled: false });
 	});
 
 	it.each([false, true])(
@@ -284,6 +292,7 @@ describe('McpService scope enforcement', () => {
 			await service.getServer(user, mcpFeatureFlags());
 
 			const blockedTools = new Set([
+				'update_credential_description',
 				'test_workflow',
 				'create_workflow_from_code',
 				'update_workflow',
@@ -323,6 +332,25 @@ describe('McpService scope enforcement', () => {
 		},
 	);
 
+	it.each([
+		{ enabled: true, scopes: ['credential:update'], expected: true },
+		{ enabled: true, scopes: ['credential:read'], expected: false },
+		{ enabled: true, scopes: ['credential:read', 'credential:update'], expected: true },
+		{ enabled: true, scopes: undefined, expected: true },
+		{ enabled: false, scopes: ['credential:update'], expected: false },
+	])(
+		'gates description updates for $scopes with flag $enabled',
+		async ({ enabled, scopes, expected }) => {
+			const server = await buildService().getServer(
+				user,
+				mcpFeatureFlags({ credentialDescriptionsEnabled: enabled }),
+				undefined,
+				{ grantedScopes: scopes },
+			);
+			expect(getRegisteredToolNames(server).has('update_credential_description')).toBe(expected);
+		},
+	);
+
 	it('every tool registered by getServer is covered by the scope map (drift guard)', async () => {
 		const server = await buildService().getServer(user, mcpFeatureFlags());
 		const registered = getRegisteredToolNames(server);
@@ -354,10 +382,10 @@ describe('McpService scope enforcement', () => {
 	});
 
 	it.each([true, false])(
-		'registers the skill tools only with an agents provider: %s',
-		async (hasProvider) => {
-			mockInstance(SkillsApiService);
-			mockInstance(SkillAgentsProxy, { hasProvider });
+		'registers the skill tools only while the skills gate is on: %s',
+		async (skillsEnabled) => {
+			mockInstance(SkillService);
+			mockInstance(SkillsGate, { isEnabled: skillsEnabled });
 			const server = await buildService({
 				builderEnabled: false,
 				agentsActive: true,
@@ -366,24 +394,23 @@ describe('McpService scope enforcement', () => {
 
 			expect(registered.has('mutate_agent')).toBe(false);
 			expect([...SKILL_TOOLS].filter((name) => registered.has(name))).toEqual(
-				hasProvider ? [...SKILL_TOOLS] : [],
+				skillsEnabled ? [...SKILL_TOOLS] : [],
 			);
 		},
 	);
 
 	it.each([
-		['an agents provider and an API key', true, true, undefined, true],
-		['an agents provider and skill:read', true, true, ['skill:read'], true],
-		['an agents provider and skill:write', true, true, ['skill:write'], true],
-		['an agents provider and no skill scope', true, true, ['workflow:read'], false],
-		['no agents provider', false, true, undefined, false],
+		['skills on and an API key', true, true, undefined, true],
+		['skills on and skill:read', true, true, ['skill:read'], true],
+		['skills on and skill:write', true, true, ['skill:write'], true],
+		['skills on and no skill scope', true, true, ['workflow:read'], false],
+		['skills off', false, true, undefined, false],
 		['the feature flag off', true, false, undefined, false],
 	])(
 		'declares the skills extension with %s',
-		async (_, hasProvider, skillsExtensionEnabled, grantedScopes, declared) => {
-			mockInstance(SkillsApiService);
+		async (_, skillsEnabled, skillsExtensionEnabled, grantedScopes, declared) => {
 			mockInstance(SkillService);
-			mockInstance(SkillAgentsProxy, { hasProvider });
+			mockInstance(SkillsGate, { isEnabled: skillsEnabled });
 			const server = await buildService({ builderEnabled: false }).getServer(
 				user,
 				mcpFeatureFlags({ skillsExtensionEnabled }),

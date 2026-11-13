@@ -11,10 +11,10 @@ import { Constructable, Container } from '@n8n/di';
 import { lazyImport } from '@n8n/utils/lazy-import';
 import type { Entry as LdapUser, ClientOptions, Client } from 'ldapts';
 import { Cipher } from 'n8n-core';
-import { CREDENTIAL_BLANKING_VALUE, jsonParse, UnexpectedError } from 'n8n-workflow';
+import { CREDENTIAL_BLANKING_VALUE, jsonParse } from 'n8n-workflow';
 import type { ConnectionOptions } from 'tls';
 
-import { BadRequestError } from '@n8n/errors';
+import { BadRequestError, UnexpectedError } from '@n8n/errors';
 import {
 	assertAuthenticationMethodCanBeEnabled,
 	getCurrentAuthenticationMethod,
@@ -655,10 +655,10 @@ export class LdapService implements IPasswordAuthHandler<User> {
 				}
 			}
 
-			const emailUser = await getUserByEmail(emailAttributeValue);
+			const emailPerson = await getUserByEmail(emailAttributeValue);
 
 			// check if there is an email user with the same email as the authenticated LDAP user trying to log-in
-			if (emailUser && emailUser.email === emailAttributeValue) {
+			if (emailPerson && emailPerson.email === emailAttributeValue) {
 				if (!this.config.linkExistingAccountsByEmail) {
 					this.logger.warn('LDAP login blocked: email matches an existing account', {
 						email: emailAttributeValue,
@@ -668,7 +668,7 @@ export class LdapService implements IPasswordAuthHandler<User> {
 					return undefined;
 				}
 
-				const identity = await createLdapAuthIdentity(emailUser, ldapId);
+				const identity = await createLdapAuthIdentity(emailPerson, ldapId);
 				await updateLdapUserOnLocalDb(identity, ldapAttributesValues);
 			} else {
 				const user = await createLdapUserOnLocalDb(ldapAttributesValues, ldapId);

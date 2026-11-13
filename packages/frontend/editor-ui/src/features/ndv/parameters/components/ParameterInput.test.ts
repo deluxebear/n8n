@@ -837,6 +837,30 @@ describe('ParameterInput.vue', () => {
 		expect(emitted('update')).toBeUndefined();
 	});
 
+	test('should show the message of a node error payload when options fail to load', async () => {
+		mockNodeTypesState.getNodeParameterOptions = vi.fn(async () => {
+			throw { name: 'NodeApiError', message: 'Authentication required' };
+		});
+
+		const { getByTestId, findByText } = renderComponent({
+			props: {
+				path: 'columns',
+				parameter: createTestNodeProperties({
+					displayName: 'Columns',
+					name: 'columns',
+					type: 'options',
+					typeOptions: { loadOptionsMethod: 'getColumnsMultiOptions' },
+				}),
+				modelValue: 'id',
+			},
+		});
+
+		await waitFor(() => expect(getByTestId('parameter-issues')).toBeInTheDocument());
+		await userEvent.hover(getByTestId('parameter-issues').firstElementChild as HTMLElement);
+
+		expect(await findByText(/"Authentication required"/)).toBeInTheDocument();
+	});
+
 	test('should not load remote options in read-only mode', async () => {
 		mockNodeTypesState.getNodeParameterOptions = vi.fn(async () => [{ name: 'ID', value: 'id' }]);
 

@@ -22,17 +22,28 @@ import {
 } from '@n8n/db';
 import { Container } from '@n8n/di';
 import { ForbiddenError } from '@n8n/errors';
+import { DataSource } from '@n8n/typeorm';
 import { Credentials } from 'n8n-core';
 
 import { ActiveWorkflowManager } from '@/active-workflow-manager';
 import { CredentialTypes } from '@/credential-types';
-import { registerSkillAgentsProvider } from '@/modules/agents/register-skill-agents-provider';
+import { AgentPolicyService } from '@/modules/agents/agent-policy.service';
+import { registerSkillUsage } from '@/modules/agents/register-skill-usage';
 import { ChatIntegrationRegistry } from '@/modules/agents/integrations/agent-chat-integration';
 import { TeamsIntegration } from '@/modules/agents/integrations/platforms/teams/teams-integration';
 import { AgentHistoryRepository } from '@/modules/agents/repositories/agent-history.repository';
+import { AgentHistory } from '@/modules/agents/entities/agent-history.entity';
 import { AgentRepository } from '@/modules/agents/repositories/agent.repository';
 import { AgentTaskRepository } from '@/modules/agents/repositories/agent-task.repository';
 import { NodeTypes } from '@/node-types';
+import { AgentSkillRepository } from '@/modules/agents/repositories/agent-skill.repository';
+import {
+	createSkill,
+	deleteAllSkills,
+	deleteSkill,
+	findLatestSkillVersion,
+	toSkillContent,
+} from '@/modules/skills/testing';
 import { PolicyEnforcementService } from '@/policy/policy-enforcement.service';
 import { createCustomRoleWithScopeSlugs } from '@test-integration/db/roles';
 import { createCredentials } from '@test-integration/db/credentials';
@@ -48,8 +59,9 @@ import type { PreparedAgent } from '../entities/agent/agent-import.types';
 import { TarPackageReader } from '../io/tar/tar-package-reader';
 import { TarPackageWriter } from '../io/tar/tar-package-writer';
 import { PackageImportConfig } from '../n8n-packages.config';
-import type { WorkflowConflictPolicy, WorkflowPublishingPolicy } from '../n8n-packages.types';
+import type { ImportConflictPolicy, WorkflowPublishingPolicy } from '../n8n-packages.types';
 import { serializedAgentSchema } from '../spec/serialized/agent.schema';
+import type { SerializedSkill } from '../spec/serialized/skill.schema';
 
 const license = new LicenseMocker();
 mockInstance(ActiveWorkflowManager);
@@ -63,7 +75,7 @@ let agents: AgentRepository;
 beforeAll(async () => {
 	await testModules.loadModules(['skills', 'agents', 'n8n-packages']);
 	await testDb.init();
-	registerSkillAgentsProvider();
+	registerSkillUsage();
 	license.mockLicenseState(Container.get(LicenseState));
 	Container.get(ChatIntegrationRegistry).register(Container.get(TeamsIntegration));
 	planner = Container.get(ImportOrchestrator);
@@ -74,6 +86,8 @@ beforeAll(async () => {
 }, 60_000);
 beforeEach(async () => {
 	await agents.delete({});
+	// Skills belong to projects and outlive their Agents.
+	await deleteAllSkills();
 	await testDb.truncate([
 		'WorkflowEntity',
 		'WorkflowHistory',
@@ -96,7 +110,6 @@ function agent(sourceAgentId: string, config: Partial<AgentJsonConfig> = {}): Pr
 			...config,
 		}),
 		availableInMCP: false,
-		skills: {},
 		tools: {},
 		tasks: {},
 		metadata: { versionId: 'source-version', publishedVersionId: null },
@@ -107,7 +120,7 @@ function input(sources: PreparedAgent[], projectId = project.id): ImportOrchestr
 	const request = importPackageRequest({
 		user,
 		packageBuffer: Buffer.alloc(0),
-		workflowConflictPolicy: 'new-version',
+		conflictPolicy: 'new-version',
 	});
 	return {
 		context: { user, projectId, folderId: null },
@@ -146,7 +159,9 @@ async function records() {
 		Container.get(CredentialsRepository).find({ order: { id: 'ASC' } }),
 		Container.get(WorkflowRepository).find({ order: { id: 'ASC' } }),
 		Container.get(ProjectRepository).find({ order: { id: 'ASC' } }),
-		Container.get(AgentHistoryRepository).find({ order: { versionId: 'ASC' } }),
+		Container.get(DataSource)
+			.getRepository(AgentHistory)
+			.find({ order: { versionId: 'ASC' } }),
 	]);
 }
 
@@ -172,6 +187,7 @@ it('seeds bundled credential expressions after planning and excludes skipped Age
 	};
 	fixture.manifest.credentials = [
 		{ id: credential.id, name: credential.name, target: 'credentials/model' },
+		{ id: 'skipped-credential', name: 'Skipped', target: 'credentials/skipped' },
 	];
 	fixture.manifest.requirements = {
 		credentials: [
@@ -197,6 +213,7 @@ it('seeds bundled credential expressions after planning and excludes skipped Age
 		variables: [{ name: 'SKIPPED_VARIABLE', usedBy: [{ kind: 'agent', id: 'research_source' }] }],
 	};
 	fixture.files['credentials/model/credential.json'] = credential;
+	fixture.files['credentials/skipped/credential.json'] = { invalid: true };
 	await agents.save({ id: 'research_source', name: 'Existing', projectId: project.id });
 	const writer = new TarPackageWriter();
 	await writeAgentPackageFixture(writer, fixture);
@@ -208,7 +225,7 @@ it('seeds bundled credential expressions after planning and excludes skipped Age
 				user,
 				projectId: project.id,
 				packageBuffer,
-				workflowConflictPolicy: 'skip',
+				conflictPolicy: 'skip',
 				credentialMissingMode: 'create-with-values',
 			}),
 			folderConflictPolicy: 'merge',
@@ -257,7 +274,6 @@ it('plans cycles, typed bindings and task IDs without changing definitions or de
 		],
 		tasks: [{ type: 'task', id: 'task_source', enabled: false }],
 	});
-	first.skills.skill_review = { name: 'Review', description: 'Review.', instructions: 'Review.' };
 	first.tools.custom_review = {
 		code: 'return { agentId: "second", credential: "model-credential" };',
 		descriptor: {
@@ -286,6 +302,8 @@ it('plans cycles, typed bindings and task IDs without changing definitions or de
 		subAgents: { agents: [{ agentId: 'shared' }] },
 	});
 	const request = input([first, second]);
+	const review = sharedSkill('skill_review', 'project');
+	request.skills = [review];
 	request.workflows = [
 		{
 			entity: Object.assign(new WorkflowEntity(), {
@@ -319,16 +337,18 @@ it('plans cycles, typed bindings and task IDs without changing definitions or de
 	const [a, b] = plan.agentPlan!.items;
 	const workflowId =
 		plan.workflowPlan.items[0].action === 'create' ? plan.workflowPlan.items[0].decidedId : '';
-	expect(a.targetAgentId).not.toBe(workflowId);
-	expect(a.config?.subAgents?.agents?.[0].agentId).toBe(b.targetAgentId);
-	expect(b.config?.subAgents?.agents?.[0].agentId).toBe(a.targetAgentId);
+	expect(a.sourceAgentId).toBe(workflowId);
+	expect(a.config?.subAgents?.agents?.[0].agentId).toBe(b.sourceAgentId);
+	expect(b.config?.subAgents?.agents?.[0].agentId).toBe(a.sourceAgentId);
 	expect(a.config?.tools?.[0]).toMatchObject({
 		workflowId,
 		inputs: first.config?.tools?.[0].type === 'workflow' ? first.config.tools[0].inputs : undefined,
 	});
 	expect(a.config?.credential).toBe(plan.credentialPlan.stubIds.get('model-credential'));
 	expect(b.config?.credential).toBe(AI_GATEWAY_MANAGED_TAG);
-	expect(a.skills).toEqual(first.skills);
+	expect(plan.agentPlan!.skills?.shared).toEqual([
+		expect.objectContaining({ skill: review, target: { projectId: project.id } }),
+	]);
 	expect(a.tools).toEqual(first.tools);
 	expect(a.config?.skills).toEqual(first.config?.skills);
 	expect(a.tasks).toEqual(first.tasks);
@@ -337,7 +357,7 @@ it('plans cycles, typed bindings and task IDs without changing definitions or de
 	expect(await records()).toEqual(before);
 });
 
-it.each<WorkflowConflictPolicy>(['new-version', 'skip', 'fail'])(
+it.each<ImportConflictPolicy>(['new-version', 'skip', 'fail'])(
 	'applies %s without resolving unused skipped definitions',
 	async (policy) => {
 		const existing = await agents.save({
@@ -348,14 +368,16 @@ it.each<WorkflowConflictPolicy>(['new-version', 'skip', 'fail'])(
 		const source = agent('source');
 		if (policy === 'skip') source.config!.credential = 'unavailable';
 		const request = input([source]);
-		request.options.workflowConflictPolicy = policy;
+		request.options.conflictPolicy = policy;
 		request.credentialRequest.requirements = [
 			{ id: 'unavailable', usedBy: [{ kind: 'agent', id: 'source' }] },
 		];
 		if (policy !== 'skip') request.credentialRequest.requirements = [];
 		else {
 			const member = await createMember();
-			const role = await createCustomRoleWithScopeSlugs(['agent:read'], { roleType: 'project' });
+			const role = await createCustomRoleWithScopeSlugs(['agent:import', 'agent:read'], {
+				roleType: 'project',
+			});
 			await linkUserToProject(member, project, role.slug);
 			request.context.user = member;
 			source.tasks.task_unused = {
@@ -383,13 +405,13 @@ it.each<WorkflowConflictPolicy>(['new-version', 'skip', 'fail'])(
 			expect(plan.blockingIssues).toEqual([]);
 			expect(plan.agentPlan!.items[0]).toMatchObject({
 				action: policy === 'skip' ? 'skip' : 'update',
-				targetAgentId: existing.id,
+				sourceAgentId: existing.id,
 			});
 			expect(plan.credentialPlan.failures).toEqual([]);
 			expect(plan.credentialPlan.stubIds.size).toBe(0);
 			if (policy === 'skip') {
 				expect(plan.agentPlan!.items[0].tasks).toEqual(source.tasks);
-				await planner.assertNotBlocked([plan], { apiKeyScopes: ['agent:read'] });
+				await planner.assertNotBlocked([plan], { apiKeyScopes: ['agent:import', 'agent:read'] });
 			}
 		}
 	},
@@ -489,7 +511,7 @@ it('keeps credential matches scoped to each project and reports an inaccessible 
 	expect(await records()).toEqual(before);
 });
 
-it('checks project boundaries after allocating the whole package', async () => {
+it('checks project boundaries after matching the whole package', async () => {
 	vi.spyOn(Container.get(NodeTypes), 'getSupportedVersions').mockReturnValue([1]);
 	const node = (workflowId: unknown) => ({
 		type: 'node' as const,
@@ -552,14 +574,14 @@ it('checks project boundaries after allocating the whole package', async () => {
 	expect(tools?.[2]).toMatchObject({ node: { nodeParameters: { workflowId: expression } } });
 });
 
-it.each<WorkflowConflictPolicy>(['new-version', 'skip'])(
+it.each<ImportConflictPolicy>(['new-version', 'skip'])(
 	'checks task ownership across project plans under %s',
 	async (policy) => {
 		await agents.save({ id: 'first', name: 'First', projectId: project.id });
 		const requests = [input([agent('first')]), input([agent('second')], otherProject.id)];
-		requests[0].options.workflowConflictPolicy = policy;
+		requests[0].options.conflictPolicy = policy;
 		for (const request of requests) {
-			request.options.workflowIdPolicy = 'source';
+			request.options.idPolicy = 'source';
 			request.agents![0].tasks.task_shared = {
 				name: 'Summary',
 				objective: 'Summarize.',
@@ -612,20 +634,21 @@ it('blocks unavailable Agent tool node types without changing destination record
 });
 
 it.each([
-	['skills', /hard to tell apart|skill name/i],
+	['skills', /hard to tell apart|same name/i],
 	['self-reference', /itself/],
 	['Teams connections', /only one Microsoft Teams connection/],
 ] as const)('uses the UI validation rule for %s', async (invalid, errorPattern) => {
 	const source = agent('source');
+	const request = input([source]);
 	if (invalid === 'skills') {
-		source.skills = {
-			skill_first: { name: 'Review', description: 'Review.', instructions: 'Review the change.' },
-			skill_second: {
-				name: 'review',
-				description: 'Review.',
-				instructions: 'Review the change.',
-			},
-		};
+		source.config!.skills = [
+			{ type: 'skill', id: 'skill_first' },
+			{ type: 'skill', id: 'skill_second' },
+		];
+		request.skills = [
+			sharedSkill('skill_first', 'project'),
+			sharedSkill('skill_second', 'project', 'review'),
+		];
 	} else if (invalid === 'self-reference') {
 		source.config!.subAgents = { agents: [{ agentId: 'source' }] };
 	} else {
@@ -635,7 +658,7 @@ it.each([
 		];
 	}
 	const before = await records();
-	const plan = await planner.plan(input([source]));
+	const plan = await planner.plan(request);
 	expect(plan.blockingIssues).toContainEqual(
 		expect.objectContaining({
 			type: 'agent-invalid',
@@ -645,12 +668,234 @@ it.each([
 	expect(await records()).toEqual(before);
 });
 
+function sharedSkill(id: string, scope: 'project' | 'instance', name = 'Review'): SerializedSkill {
+	return {
+		id,
+		scope,
+		skill: { name, description: 'Review.', instructions: 'Review the change.' },
+		frontmatter: null,
+	};
+}
+
+it.each([
+	['project', 'projectSkill:create'],
+	['instance', 'skill:create'],
+] as const)('requires the skills UI permission to create a %s skill', async (scope, missing) => {
+	const member = await createMember();
+	const scopes = ['agent:import', 'agent:read', 'workflow:import', 'agent:create'];
+	const role = await createCustomRoleWithScopeSlugs(scopes, { roleType: 'project' });
+	await linkUserToProject(member, project, role.slug);
+	const request = input([agent('source', { skills: [{ type: 'skill', id: 'skill_shared' }] })]);
+	request.context.user = member;
+	request.skills = [sharedSkill('skill_shared', scope)];
+	const before = await records();
+	await expect(planner.plan(request)).rejects.toThrow(
+		'You are not allowed to create or edit skills "Review" (skill_shared).',
+	);
+	expect(await records()).toEqual(before);
+	if (missing === 'skill:create') return;
+	const permitted = await createCustomRoleWithScopeSlugs([...scopes, missing], {
+		roleType: 'project',
+	});
+	await linkUserToProject(member, project, permitted.slug);
+	expect((await planner.plan(request)).blockingIssues).toEqual([]);
+});
+
+it.each([
+	['a skill ID in another scope', 'skill_shared', 'Other', 'already belongs to another'],
+	['another skill with the same name', 'skill_other', 'REVIEW', 'already named "Review"'],
+	['changed content under fail', 'skill_shared', 'Review', 'already exists with different content'],
+] as const)('reports %s in the preview', async (_case, existingId, existingName, message) => {
+	await createSkill({
+		id: existingId,
+		projectId: _case === 'a skill ID in another scope' ? null : project.id,
+		content: toSkillContent({ name: existingName, description: 'Other.', instructions: 'Other.' }),
+	});
+	const request = input([agent('source', { skills: [{ type: 'skill', id: 'skill_shared' }] })]);
+	request.options.conflictPolicy = 'fail';
+	request.skills = [sharedSkill('skill_shared', 'project')];
+	const before = await findLatestSkillVersion(existingId);
+	const plan = await planner.plan(request);
+	expect(plan.blockingIssues).toEqual([
+		expect.objectContaining({
+			type: 'agent-invalid',
+			sourceAgentId: 'source',
+			path: 'skills.skill_shared',
+			message: expect.stringContaining(message),
+		}),
+	]);
+	expect(await findLatestSkillVersion(existingId)).toEqual(before);
+	await deleteSkill(existingId);
+});
+
+it('reimports a changed instance skill across two projects', async () => {
+	const skill = sharedSkill('skill_revision_regression', 'instance');
+	const refs = [{ type: 'skill' as const, id: skill.id }];
+	const requests = [
+		input([agent('first', { skills: refs })]),
+		input([agent('second', { skills: refs })], otherProject.id),
+	];
+	for (const request of requests) request.skills = [skill];
+	async function applyPackage() {
+		const plans = await planner.planPackage(requests);
+		expect(plans.flatMap((plan) => plan.blockingIssues)).toEqual([]);
+		for (const plan of plans) await planner.apply(plan);
+	}
+	try {
+		await applyPackage();
+		skill.skill.instructions = 'Updated shared instructions.';
+		await expect(applyPackage()).resolves.toBeUndefined();
+		expect(await findLatestSkillVersion(skill.id)).toMatchObject({
+			version: 2,
+			instructions: 'Updated shared instructions.',
+		});
+	} finally {
+		await agents.delete({});
+		await deleteSkill(skill.id);
+	}
+});
+
+it('checks the names that the Agent keeps after a skipped skill', async () => {
+	await createSkill({
+		id: 'skill_support',
+		projectId: project.id,
+		content: toSkillContent({ name: 'Review', description: 'Kept.', instructions: 'Kept.' }),
+	});
+	const request = input([
+		agent('source', {
+			skills: [
+				{ type: 'skill', id: 'skill_support' },
+				{ type: 'skill', id: 'skill_review' },
+			],
+		}),
+	]);
+	request.options.conflictPolicy = 'skip';
+	request.skills = [
+		sharedSkill('skill_support', 'project', 'Support'),
+		sharedSkill('skill_review', 'project'),
+	];
+	const plan = await planner.plan(request);
+	// The kept skill is a project skill, so the project already has the name.
+	expect(plan.blockingIssues).toEqual([
+		expect.objectContaining({
+			type: 'agent-invalid',
+			path: 'skills.skill_review',
+			message: expect.stringContaining('already named "Review"'),
+		}),
+	]);
+	await deleteSkill('skill_support');
+});
+
+it('reports two instance skills with names like each other in different project scopes', async () => {
+	const first = input([agent('first', { skills: [{ type: 'skill', id: 'skill_one' }] })]);
+	const second = input(
+		[agent('second', { skills: [{ type: 'skill', id: 'skill_two' }] })],
+		otherProject.id,
+	);
+	first.skills = second.skills = [
+		sharedSkill('skill_one', 'instance'),
+		sharedSkill('skill_two', 'instance', 'review'),
+	];
+	const [firstPlan, secondPlan] = await planner.planPackage([first, second]);
+	expect(firstPlan.blockingIssues).toEqual([]);
+	expect(secondPlan.blockingIssues).toEqual([
+		expect.objectContaining({
+			type: 'agent-invalid',
+			sourceAgentId: 'second',
+			path: 'skills.skill_two',
+			message: expect.stringContaining('same name "review"'),
+		}),
+	]);
+});
+
+it('reports a rename that clashes with a skill of another Agent that follows the skill', async () => {
+	await agents.save({ id: 'follower', name: 'Follower', projectId: project.id });
+	// The follower's other skill is in another scope, so only the follower check sees the clash.
+	for (const [id, target] of [
+		['skill_shared', { projectId: project.id }],
+		['skill_pricing', { projectId: null }],
+	] as const) {
+		await createSkill({
+			id,
+			...target,
+			content: toSkillContent({
+				name: id === 'skill_shared' ? 'Review' : 'Pricing',
+				description: 'Existing.',
+				instructions: 'Existing.',
+			}),
+		});
+	}
+	await Container.get(AgentSkillRepository).replaceDependencies('follower', [
+		{ skillId: 'skill_shared' },
+		{ skillId: 'skill_pricing' },
+	]);
+	const request = input([agent('source', { skills: [{ type: 'skill', id: 'skill_shared' }] })]);
+	request.skills = [sharedSkill('skill_shared', 'project', 'Pricing')];
+	const plan = await planner.plan(request);
+	expect(plan.blockingIssues).toEqual([
+		expect.objectContaining({
+			type: 'agent-invalid',
+			path: 'skills.skill_shared',
+			message: expect.stringContaining('Cannot rename to "Pricing"'),
+		}),
+	]);
+	await agents.delete({ id: 'follower' });
+	await deleteSkill('skill_shared');
+});
+
+it('keeps a name clash that the Agent already has', async () => {
+	await agents.save({ id: 'source', name: 'Existing', projectId: project.id });
+	const skills = [
+		sharedSkill('skill_first', 'project'),
+		sharedSkill('skill_second', 'project', 'review'),
+	];
+	for (const { id, skill } of skills) {
+		await createSkill({ id, projectId: project.id, content: toSkillContent(skill) });
+	}
+	await Container.get(AgentSkillRepository).replaceDependencies(
+		'source',
+		skills.map(({ id }) => ({ skillId: id })),
+	);
+	const request = input([
+		agent('source', {
+			skills: skills.map(({ id }) => ({ type: 'skill' as const, id })),
+		}),
+	]);
+	request.skills = skills;
+	const plan = await planner.plan(request);
+	expect(plan.blockingIssues).not.toContainEqual(
+		expect.objectContaining({ path: expect.stringMatching(/^skills\./) }),
+	);
+	await agents.delete({ id: 'source' });
+});
+
+it('reports two package skills with names that are hard to tell apart in one scope', async () => {
+	const request = input([
+		agent('first', { skills: [{ type: 'skill', id: 'skill_one' }] }),
+		agent('second', { skills: [{ type: 'skill', id: 'skill_two' }] }),
+	]);
+	request.skills = [
+		sharedSkill('skill_one', 'project'),
+		sharedSkill('skill_two', 'project', 'review'),
+	];
+	const plan = await planner.plan(request);
+	expect(plan.blockingIssues).toEqual([
+		expect.objectContaining({
+			type: 'agent-invalid',
+			sourceAgentId: 'second',
+			path: 'skills.skill_two',
+			message: expect.stringContaining('same name "review"'),
+		}),
+	]);
+});
+
 it.each(['create', 'update', 'publish', 'unpublish'] as const)(
 	'requires the Agent %s action scope for project roles and API keys',
 	async (action) => {
 		const member = await createMember();
 		const required = `agent:${action}`;
 		const scopes = [
+			'agent:import',
 			'agent:read',
 			'workflow:import',
 			'agent:create',
@@ -670,13 +915,16 @@ it.each(['create', 'update', 'publish', 'unpublish'] as const)(
 				projectId: project.id,
 			});
 			if (action === 'unpublish') {
-				await Container.get(AgentHistoryRepository).saveVersion({
-					agentId: 'source',
-					versionId: 'published',
-					schema: null,
-					tools: {},
-					publishedBy: 'Test',
-				});
+				await Container.get(AgentHistoryRepository).saveVersion(
+					{
+						agentId: 'source',
+						versionId: 'published',
+						schema: null,
+						tools: {},
+						publishedBy: 'Test',
+					},
+					{},
+				);
 				await agents.update('source', { activeVersionId: 'published' });
 			}
 		}
@@ -688,7 +936,7 @@ it.each(['create', 'update', 'publish', 'unpublish'] as const)(
 			publish: 'publish-all',
 			unpublish: 'unpublish-all',
 		};
-		request.options.workflowPublishingPolicy = policies[action];
+		request.options.publishingPolicy = policies[action];
 		const before = await records();
 		await expect(planner.plan(request)).rejects.toBeInstanceOf(ForbiddenError);
 		const permittedRole = await createCustomRoleWithScopeSlugs(scopes, { roleType: 'project' });
@@ -704,6 +952,51 @@ it.each(['create', 'update', 'publish', 'unpublish'] as const)(
 	},
 );
 
+it.each(['existing', 'pending'] as const)(
+	'checks credential stub permissions for Agents in %s projects',
+	async (destination) => {
+		const member = await createMember();
+		const scopes = ['agent:import', 'agent:read', 'agent:create'];
+		const role = await createCustomRoleWithScopeSlugs(scopes, { roleType: 'project' });
+		await linkUserToProject(member, project, role.slug);
+		const request = input(
+			[agent('source', { model: 'openai/gpt-4.1-mini', credential: 'missing-credential' })],
+			destination === 'pending' ? 'pending-project' : project.id,
+		);
+		request.context.user = member;
+		request.projectPendingCreation = destination === 'pending';
+		request.credentialRequest.missingMode = 'create-stub';
+		request.credentialRequest.requirements = [
+			{
+				id: 'missing-credential',
+				type: 'openAiApi',
+				usedBy: [{ kind: 'agent', id: 'source' }],
+			},
+		];
+		const before = await records();
+		const plan = await planner.plan(request);
+		expect(plan.blockingIssues).toEqual([]);
+
+		if (destination === 'existing') {
+			await expect(
+				planner.assertNotBlocked([plan], { apiKeyScopes: undefined }),
+			).rejects.toBeInstanceOf(ForbiddenError);
+			const permittedRole = await createCustomRoleWithScopeSlugs([...scopes, 'credential:create'], {
+				roleType: 'project',
+			});
+			await linkUserToProject(member, project, permittedRole.slug);
+		}
+
+		await expect(planner.assertNotBlocked([plan], { apiKeyScopes: scopes })).rejects.toBeInstanceOf(
+			ForbiddenError,
+		);
+		await expect(
+			planner.assertNotBlocked([plan], { apiKeyScopes: [...scopes, 'credential:create'] }),
+		).resolves.toBeUndefined();
+		expect(await records()).toEqual(before);
+	},
+);
+
 it('plans an authorized pending project without creating its shell and still checks API-key scopes', async () => {
 	const request = input([agent('source')], 'pending-project');
 	request.projectPendingCreation = true;
@@ -711,16 +1004,22 @@ it('plans an authorized pending project without creating its shell and still che
 	const plan = await planner.plan(request);
 	expect(plan.blockingIssues).toEqual([]);
 	await expect(
-		planner.assertNotBlocked([plan], { apiKeyScopes: ['agent:read'] }),
+		planner.assertNotBlocked([plan], { apiKeyScopes: ['agent:read', 'agent:create'] }),
 	).rejects.toBeInstanceOf(ForbiddenError);
 	await expect(
-		planner.assertNotBlocked([plan], { apiKeyScopes: ['agent:read', 'agent:create'] }),
+		planner.assertNotBlocked([plan], { apiKeyScopes: ['agent:import', 'agent:read'] }),
+	).rejects.toBeInstanceOf(ForbiddenError);
+	await expect(
+		planner.assertNotBlocked([plan], {
+			apiKeyScopes: ['agent:import', 'agent:read', 'agent:create'],
+		}),
 	).resolves.toBeUndefined();
 	expect(await records()).toEqual(before);
 });
 
-it('reports save-policy refusal without enforcing a save or changing records', async () => {
+it('evaluates normalized configuration and reports policy refusal without saving', async () => {
 	const enforcement = Container.get(PolicyEnforcementService);
+	const evaluateAgent = vi.spyOn(Container.get(AgentPolicyService), 'evaluateSave');
 	const violation = {
 		kind: 'node-type-unavailable' as const,
 		checkId: 'node-type-availability',
@@ -731,7 +1030,15 @@ it('reports save-policy refusal without enforcing a save or changing records', a
 		.mockResolvedValue({ violations: [violation] });
 	const enforce = vi.spyOn(enforcement, 'enforceWorkflowSave');
 	const before = await records();
-	const plan = await planner.plan(input([agent('source')]));
+	const source = agent('source', {
+		model: 'anthropic/claude-sonnet-4-5',
+		config: { webSearch: { enabled: false } },
+		providerTools: { 'anthropic.web_search': { maxUses: 5 } },
+	});
+	const normalizedConfig = { ...source.config, providerTools: {} };
+	const plan = await planner.plan(input([source]));
+	expect(plan.agentPlan?.items[0].config).toEqual(normalizedConfig);
+	expect(evaluateAgent).toHaveBeenCalledWith(project.id, null, normalizedConfig, null);
 	expect(plan.blockingIssues).toContainEqual({
 		type: 'agent-policy-violation',
 		sourceAgentId: 'source',
