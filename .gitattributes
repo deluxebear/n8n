@@ -1,3 +1,6 @@
 *.sh text eol=lf
 *.patch text eol=lf
 docs/generated/**/* linguist-generated
+
+# Patch context lines can contain a single space.
+docker/images/node-pc/patches/0001-v8-normalize-one-byte-ast-strings.patch whitespace=-blank-at-eol

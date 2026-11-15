@@ -1,6 +1,6 @@
 {
   "name": "n8n-monorepo",
-  "version": "2.47.5",
+  "version": "2.47.7",
   "private": true,
   "engines": {
     "node": ">=24.0.0",
@@ -62,6 +62,7 @@
     "format:check": "turbo run format:check",
     "jscpd": "jscpd",
     "lint": "turbo run lint",
+    "lint:request-target": "node scripts/lint-request-target.mjs",
     "lint:styles": "turbo run lint:styles",
     "lint:styles:fix": "turbo run lint:styles:fix",
     "lint:affected": "turbo run lint --affected",

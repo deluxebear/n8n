@@ -12286,5 +12286,6 @@
 	"selfHealing.config.personalNotFound": "此配置已不可用。",
 	"selfHealing.config.projectMembers": "来自 {project} 的人员",
 	"selfHealing.config.removeProjectMembers": "从审查者中移除项目成员",
-	"selfHealing.config.projectMembersIncluded": "已包含所有符合条件的项目成员。"
+	"selfHealing.config.projectMembersIncluded": "已包含所有符合条件的项目成员。",
+	"agents.builder.advanced.promptCaching.label": "提示词缓存"
 }
