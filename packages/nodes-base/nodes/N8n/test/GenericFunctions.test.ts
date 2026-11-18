@@ -1,7 +1,6 @@
 import { mockDeep } from 'vitest-mock-extended';
 import type { ILoadOptionsFunctions } from 'n8n-workflow';
 import { requestPath } from 'n8n-workflow';
-
 import { apiRequest } from '../GenericFunctions';
 
 describe('apiRequest', () => {

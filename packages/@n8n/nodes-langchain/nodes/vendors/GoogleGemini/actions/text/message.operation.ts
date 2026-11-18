@@ -535,9 +535,7 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 		this,
 		'POST',
 		requestPath`/v1beta${modelPath.call(this, model)}:generateContent`,
-		{
-			body,
-		},
+		{ body },
 	)) as GenerateContentResponse;
 
 	const captureUsage = () => {
@@ -599,9 +597,7 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 			this,
 			'POST',
 			requestPath`/v1beta${modelPath.call(this, model)}:generateContent`,
-			{
-				body,
-			},
+			{ body },
 		)) as GenerateContentResponse;
 		captureUsage();
 		toolCalls = getToolCalls(response);

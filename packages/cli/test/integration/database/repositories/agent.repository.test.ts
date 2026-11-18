@@ -1,7 +1,7 @@
 import { N8N_CHAT_INTEGRATION_TYPE } from '@n8n/api-types';
 import type { AgentIntegrationConfig, AgentJsonConfig } from '@n8n/api-types';
 import { createTeamProject, mockLogger, testDb, testModules } from '@n8n/backend-test-utils';
-import { TransactionRunner, type User, type WorkflowRepository } from '@n8n/db';
+import { Person, TransactionRunner, type WorkflowRepository } from '@n8n/db';
 import { Container } from '@n8n/di';
 import { ConflictError } from '@n8n/errors';
 import { DataSource } from '@n8n/typeorm';
@@ -214,12 +214,12 @@ describe('AgentRepository', () => {
 				mock(),
 				definitionService,
 			);
-			const user = mock<User>({ firstName: 'Test', lastName: 'User' });
+			const person = Object.assign(new Person(), { firstName: 'Test', lastName: 'User' });
 			const id = uuid();
 			const options = {
 				id,
-				user,
-				actor: { kind: 'user', user },
+				user: person,
+				actor: { kind: 'user', user: person },
 				createdBy: 'user',
 				adoptOnCollision: true,
 				config: { instructions: 'Help users', skills: [{ type: 'skill', id: skillId }] },
@@ -330,7 +330,7 @@ describe('AgentRepository', () => {
 					agent.id,
 					projectId,
 					config,
-					mock<User>({ firstName: 'Test', lastName: 'User' }),
+					Object.assign(new Person(), { firstName: 'Test', lastName: 'User' }),
 					options,
 				),
 			).rejects.toThrow('Task cleanup failed');
@@ -345,7 +345,7 @@ describe('AgentRepository', () => {
 				agent.id,
 				projectId,
 				config,
-				mock<User>({ firstName: 'Test', lastName: 'User' }),
+				Object.assign(new Person(), { firstName: 'Test', lastName: 'User' }),
 				options,
 			);
 			expect(saved.config).toMatchObject({ name: 'Updated agent', tasks: [] });
@@ -360,7 +360,7 @@ describe('AgentRepository', () => {
 				agent.id,
 				projectId,
 				saved.config,
-				mock<User>({ firstName: 'Test', lastName: 'User' }),
+				Object.assign(new Person(), { firstName: 'Test', lastName: 'User' }),
 				{
 					...options,
 					baseConfigHash: saved.configHash,
@@ -492,7 +492,7 @@ describe('AgentRepository', () => {
 					'task-1',
 					{ name: 'Renamed task' },
 					{
-						user: mock<User>({ firstName: 'Test', lastName: 'User' }),
+						user: Object.assign(new Person(), { firstName: 'Test', lastName: 'User' }),
 						modifiedBy: 'user',
 					},
 				),

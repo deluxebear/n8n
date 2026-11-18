@@ -6,8 +6,8 @@ import type {
 } from 'n8n-workflow';
 import {
 	NodeOperationError,
-	UnexpectedError,
 	requestPath,
+	UnexpectedError,
 	updateDisplayOptions,
 } from 'n8n-workflow';
 

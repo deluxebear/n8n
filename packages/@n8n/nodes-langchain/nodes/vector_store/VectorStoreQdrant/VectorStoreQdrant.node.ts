@@ -5,9 +5,9 @@ import { QdrantVectorStore } from '@langchain/qdrant';
 import { type Schemas as QdrantSchemas } from '@qdrant/js-client-rest';
 import {
 	assertParamIsString,
+	UnexpectedError,
 	type IDataObject,
 	type INodeProperties,
-	UnexpectedError,
 } from 'n8n-workflow';
 
 import { createQdrantClient, type QdrantCredential } from './Qdrant.utils';

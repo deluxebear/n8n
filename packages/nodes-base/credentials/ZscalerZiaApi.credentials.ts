@@ -7,7 +7,7 @@ import type {
 	INodeProperties,
 	Icon,
 } from 'n8n-workflow';
-import { requestUrl, UserError } from 'n8n-workflow';
+import { UserError, requestUrl } from 'n8n-workflow';
 
 export class ZscalerZiaApi implements ICredentialType {
 	name = 'zscalerZiaApi';

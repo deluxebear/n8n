@@ -31,7 +31,7 @@ import { WorkflowMissingIdError } from '@/errors/workflow-missing-id.error';
 import { CredentialsPermissionChecker } from '@/executions/pre-execution-checks';
 import { NodeTypes } from '@/node-types';
 import { Push } from '@/push';
-import { Publisher } from '@/scaling/pubsub/publisher.service';
+import { Publisher } from '@n8n/backend-services';
 import { removeTrailingSlash } from '@/utils';
 import type { TestWebhookRegistration } from '@/webhooks/test-webhook-registrations.service';
 import { TestWebhookRegistrationsService } from '@/webhooks/test-webhook-registrations.service';

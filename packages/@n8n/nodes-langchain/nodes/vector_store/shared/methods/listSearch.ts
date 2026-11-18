@@ -1,6 +1,6 @@
 import { Pinecone } from '@pinecone-database/pinecone';
 import { MilvusClient } from '@zilliz/milvus2-sdk-node';
-import { UserError, requestUrl, type IDataObject, type ILoadOptionsFunctions } from 'n8n-workflow';
+import { requestUrl, UserError, type IDataObject, type ILoadOptionsFunctions } from 'n8n-workflow';
 
 import type { QdrantCredential } from '../../VectorStoreQdrant/Qdrant.utils';
 import { createQdrantClient } from '../../VectorStoreQdrant/Qdrant.utils';

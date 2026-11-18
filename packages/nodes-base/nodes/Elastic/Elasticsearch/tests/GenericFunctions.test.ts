@@ -1,9 +1,9 @@
 import {
 	type IExecuteFunctions,
 	NodeApiError,
+	UserError,
 	requestPath,
 	requestUrl,
-	UserError,
 } from 'n8n-workflow';
 
 import { elasticsearchApiRequest, elasticsearchApiRequestAllItems } from '../GenericFunctions';

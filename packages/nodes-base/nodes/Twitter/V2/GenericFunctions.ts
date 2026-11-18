@@ -10,7 +10,7 @@ import type {
 	RequestPath,
 	WithRequestTarget,
 } from 'n8n-workflow';
-import { NodeApiError, NodeOperationError, requestPath, requestUrl, UserError } from 'n8n-workflow';
+import { NodeApiError, NodeOperationError, UserError, requestPath, requestUrl } from 'n8n-workflow';
 
 export async function twitterApiRequest(
 	this: IExecuteFunctions | ILoadOptionsFunctions | IHookFunctions,

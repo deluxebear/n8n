@@ -4,9 +4,9 @@ import {
 	decodePathValue,
 	NodeApiError,
 	NodeOperationError,
+	UserError,
 	requestPath,
 	requestUrl,
-	UserError,
 } from 'n8n-workflow';
 import type {
 	IAdditionalCredentialOptions,

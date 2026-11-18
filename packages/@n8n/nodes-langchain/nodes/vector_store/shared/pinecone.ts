@@ -13,7 +13,7 @@ import type {
 	RequestUrl,
 	WithRequestTarget,
 } from 'n8n-workflow';
-import { OperationalError, UserError, requestUrl } from 'n8n-workflow';
+import { OperationalError, requestUrl, UserError } from 'n8n-workflow';
 
 // @langchain/pinecone needs SDK 5 (API 2025-01), and the first SDK with the documents API (v9)
 // can't be installed next to it (pnpm deploy rejects two versions of one peer). So the

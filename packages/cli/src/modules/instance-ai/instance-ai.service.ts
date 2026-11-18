@@ -10,6 +10,7 @@ import {
 	type InstanceAiHandoffContext,
 	type InstanceAiAgentAttachment,
 	type InstanceAiFileAttachment,
+	type InstanceAiElementAttachment,
 	type InstanceAiNodesAttachment,
 	type InstanceAiResourceAttachment,
 	type InstanceAiWorkflowAttachment,
@@ -27,10 +28,10 @@ import {
 	WORKFLOW_BUILDER_TOOL_NAMES,
 } from '@n8n/api-types';
 import { Logger, ModuleRegistry } from '@n8n/backend-common';
-import { EventService } from '@n8n/backend-services';
+import { EventService, Publisher } from '@n8n/backend-services';
 import { GlobalConfig, type AiConfig, type InstanceAiConfig } from '@n8n/config';
 import { UserRepository, type User } from '@n8n/db';
-import { OnPubSubEvent } from '@n8n/decorators';
+import { OnPubSubEvent, type PubSubCommandMap } from '@n8n/decorators';
 import { Container, Service } from '@n8n/di';
 import {
 	SELF_HEALING_PROFILE_VERSION,
@@ -105,8 +106,6 @@ import {
 } from '@n8n/errors';
 import { InstanceAiBuilderDelegateAdapterService } from './instance-ai-builder-delegate.adapter';
 import { modelStreamStallOptions } from '@/utils/model-stream-stall-options';
-import { Publisher } from '@/scaling/pubsub/publisher.service';
-import type { PubSubCommandMap } from '@/scaling/pubsub/pubsub.event-map';
 import { AiService } from '@/services/ai.service';
 import { Telemetry } from '@/telemetry';
 import { assertNever } from '@/utils';
@@ -222,6 +221,10 @@ function describeMemoryTaskOutcome(value: unknown): { outcome?: string; reason?:
 		outcome: value.status,
 		...(typeof value.reason === 'string' ? { reason: value.reason } : {}),
 	};
+}
+
+function toTelemetryInputType(inputType: string): string {
+	return inputType === 'app-blueprint' ? 'app_blueprint' : inputType;
 }
 
 const WORKFLOW_SETUP_ROUTING_CLAIM_TTL_MS = 15 * 60 * 1000;
@@ -2421,10 +2424,15 @@ export class InstanceAiService {
 			(attachment): attachment is InstanceAiNodesAttachment => attachment.type === 'nodes',
 		);
 
+		const elementAttachments = attachmentsOrEmpty.filter(
+			(attachment): attachment is InstanceAiElementAttachment => attachment.type === 'element',
+		);
+
 		return [
 			...workflowAttachments,
 			...agentAttachments,
 			...(nodeContextEnabled ? nodeAttachments : []),
+			...elementAttachments,
 		];
 	}
 
@@ -4620,7 +4628,7 @@ export class InstanceAiService {
 			?.servers;
 		let type: string;
 		if (inputType) {
-			type = inputType;
+			type = toTelemetryInputType(inputType);
 		} else if (Array.isArray(payload.setupRequests) && payload.setupRequests.length > 0) {
 			type = 'setup';
 		} else if (Array.isArray(payload.credentialRequests) && payload.credentialRequests.length > 0) {

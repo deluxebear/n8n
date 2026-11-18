@@ -4,3 +4,7 @@ docs/generated/**/* linguist-generated
 
 # Patch context lines can contain a single space.
 docker/images/node-pc/patches/0001-v8-normalize-one-byte-ast-strings.patch whitespace=-blank-at-eol
+
+# Rendered snapshots retain whitespace from the HTML serializer.
+packages/frontend/editor-ui/src/app/components/__snapshots__/WhatsNewModal.test.ts.snap whitespace=-blank-at-eol
+packages/frontend/editor-ui/src/features/ai/instanceAi/__tests__/__snapshots__/ArtifactCard.test.ts.snap whitespace=-blank-at-eol

@@ -13,9 +13,9 @@ import type {
 import {
 	NodeApiError,
 	NodeOperationError,
+	UnexpectedError,
 	requestPath,
 	requestUrl,
-	UnexpectedError,
 } from 'n8n-workflow';
 
 import { capitalize } from '../utilities';
