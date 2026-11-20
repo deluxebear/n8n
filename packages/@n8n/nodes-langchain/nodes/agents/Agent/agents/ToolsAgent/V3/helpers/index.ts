@@ -14,7 +14,6 @@ export { executeBatch, type AgentMemoryHitCounters } from './executeBatch';
 
 export { checkMaxIterations } from './checkMaxIterations';
 
-export {
-	resolveSubAgentRequest,
-	type ResolveSubAgentRequestDeps,
-} from './resolveSubAgentRequest';
+export { resolveSubAgentRequest, type ResolveSubAgentRequestDeps } from './resolveSubAgentRequest';
+
+export { mergeRequestMetadata } from './mergeRequestMetadata';
