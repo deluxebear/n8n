@@ -12396,5 +12396,7 @@
 	"agents.builder.templates.morningNewsBrief.placeholder": "帮我构建一个每日新闻简报智能体",
 	"agents.builder.templates.processIncomingEmails.placeholder": "帮我构建一个管理收件邮件的智能体",
 	"agents.builder.templates.qualifyNewLeads.placeholder": "帮我构建一个筛选新潜在客户的智能体",
-	"agents.builder.templates.proposeMeetingTimes.placeholder": "帮我构建一个建议会议时间的智能体"
+	"agents.builder.templates.proposeMeetingTimes.placeholder": "帮我构建一个建议会议时间的智能体",
+	"settings.migrationReport.detail.table.neverRunTooltip": "此工作流从未执行过",
+	"settings.migrationReport.detail.table.staleTooltip": "已超过 90 天未执行。此工作流可能已不再使用。"
 }
