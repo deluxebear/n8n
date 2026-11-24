@@ -191,9 +191,10 @@ export class EnterpriseWorkflowService {
 	): WorkflowWithSharingsMetaDataAndCredentials {
 		const workflowWithMetaData = this.ownershipService.addOwnedByAndSharedWith(workflow);
 
+		const { shared: _shared, ...enrichedWorkflow } = { ...workflow, ...workflowWithMetaData };
+
 		return {
-			...workflow,
-			...workflowWithMetaData,
+			...enrichedWorkflow,
 			usedCredentials: workflow.usedCredentials ?? [],
 		};
 	}
@@ -859,6 +860,7 @@ export class EnterpriseWorkflowService {
 				parentFolder = await this.folderRepository.findOneOrFailFolderInProject(
 					destinationParentFolderId,
 					destinationProjectId,
+					'workflow',
 				);
 			} catch {
 				throw new TransferWorkflowError(
@@ -937,7 +939,11 @@ export class EnterpriseWorkflowService {
 		destinationProjectId: string,
 	): Promise<FolderTransferPreview> {
 		try {
-			await this.folderRepository.findOneOrFailFolderInProject(sourceFolderId, sourceProjectId);
+			await this.folderRepository.findOneOrFailFolderInProject(
+				sourceFolderId,
+				sourceProjectId,
+				'workflow',
+			);
 		} catch {
 			throw new FolderNotFoundError(sourceFolderId);
 		}
@@ -1051,7 +1057,7 @@ export class EnterpriseWorkflowService {
 
 	async getFolderUsedCredentials(user: User, folderId: string, projectId: string) {
 		try {
-			await this.folderRepository.findOneOrFailFolderInProject(folderId, projectId);
+			await this.folderRepository.findOneOrFailFolderInProject(folderId, projectId, 'workflow');
 		} catch {
 			throw new FolderNotFoundError(folderId);
 		}
@@ -1106,14 +1112,23 @@ export class EnterpriseWorkflowService {
 
 		// 4. checks
 
-		if (destinationParentFolderId !== PROJECT_ROOT) {
-			await this.folderRepository.findOneOrFailFolderInProject(
-				destinationParentFolderId,
-				destinationProjectId,
-			);
-		}
+		try {
+			if (destinationParentFolderId !== PROJECT_ROOT) {
+				await this.folderRepository.findOneOrFailFolderInProject(
+					destinationParentFolderId,
+					destinationProjectId,
+					'workflow',
+				);
+			}
 
-		await this.folderRepository.findOneOrFailFolderInProject(sourceFolderId, sourceProjectId);
+			await this.folderRepository.findOneOrFailFolderInProject(
+				sourceFolderId,
+				sourceProjectId,
+				'workflow',
+			);
+		} catch {
+			throw new NotFoundError('Folder not found in the requested project');
+		}
 
 		await this.assertCanMoveAll(user, workflows);
 		assertNoneOwnedBy(workflows, destinationProject);

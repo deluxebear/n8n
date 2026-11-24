@@ -12,10 +12,11 @@ import type {
 	SuspendEmission,
 } from '../../types/runtime/agent-loop';
 import { withPromptSizeBreakdown } from './prompt-size-usage';
-import { classifyModelTurnError, mergeUsage } from './runtime-helpers';
+import { classifyModelTurnError, mergeUsage, resolveAiFinishReason } from './runtime-helpers';
 import type { ExecutionOptions, TokenUsage } from '../../types/sdk/agent';
 import type { AgentDbMessage, AgentMessage } from '../../types/sdk/message';
 import { isAttachmentValidationError } from '../model/attachment-validation-error';
+import { isEncryptedReasoningRejected } from '../model/encrypted-reasoning';
 import { toPromptCacheParamsError } from '../model/prompt-cache-params-error';
 import { loadAi } from '../model/lazy-ai';
 import { fromAiFinishReason, fromAiMessages } from '../model/messages';
@@ -287,6 +288,14 @@ export class StreamSink implements RunOutputSink<void> {
 					? { ...rawChunk, error: toPromptCacheParamsError(rawChunk.error) }
 					: rawChunk;
 			if (chunk.type === 'error' && isAttachmentValidationError(chunk.error)) throw chunk.error;
+			// The runtime retries this without the rejected reasoning. Do not forward it.
+			if (
+				chunk.type === 'error' &&
+				!attemptState.streamedContent &&
+				isEncryptedReasoningRejected(chunk.error)
+			) {
+				throw chunk.error;
+			}
 			// Result promises report this error. Do not forward it or count it as content before a retry.
 			if (chunk.type === 'error' && NoOutputGeneratedError.isInstance(chunk.error)) continue;
 			if (!this.captureStreamChunk(chunk, attemptState)) continue;
@@ -401,7 +410,8 @@ export class StreamSink implements RunOutputSink<void> {
 				? await raceWithStallDeadline(promise, idleMs, () => turnAbort.abort())
 				: await promise;
 
-		const aiFinishReason = await settle(result.finishReason);
+		const toolCalls = await settle(result.toolCalls);
+		const aiFinishReason = resolveAiFinishReason(await settle(result.finishReason), toolCalls);
 		const usage = await settle(result.usage);
 		const finalStep = await settle(result.finalStep);
 		const newMessages = fromAiMessages(await settle(result.responseMessages));
@@ -416,7 +426,7 @@ export class StreamSink implements RunOutputSink<void> {
 			finishReason: fromAiFinishReason(aiFinishReason),
 			usage: toTokenUsage(usage, finalStep.providerMetadata),
 			newMessages,
-			toolCalls: await settle(result.toolCalls),
+			toolCalls,
 			structuredOutput:
 				ctx.outputSpec && aiFinishReason !== 'tool-calls' ? await settle(result.output) : undefined,
 			...(errorReason && { errorReason }),

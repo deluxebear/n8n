@@ -1022,6 +1022,51 @@ describe('CredentialsHelper', () => {
 			expect(result).toMatchObject({ useDynamicClientRegistration: false });
 		});
 
+		test('keeps the stored registration choice of a type that supports registration', async () => {
+			const todoistOAuth2Type: ICredentialType = {
+				name: 'todoistOAuth2Api',
+				displayName: 'Todoist OAuth2 API',
+				dynamicClientRegistration: true,
+				properties: [
+					{
+						displayName: 'Use Dynamic Client Registration',
+						name: 'useDynamicClientRegistration',
+						type: 'hidden',
+						default: false,
+					},
+					{
+						displayName: 'Server URL',
+						name: 'serverUrl',
+						type: 'hidden',
+						default: 'https://todoist.com',
+					},
+					{
+						displayName: 'Client ID',
+						name: 'clientId',
+						type: 'string',
+						default: '',
+						displayOptions: { show: { useDynamicClientRegistration: [false] } },
+					},
+				],
+			};
+			registerType(todoistOAuth2Type);
+			const credentialsOverwrites = mock<CredentialsOverwrites>();
+			credentialsOverwrites.applyOverwrite.mockImplementation((_type, data) => data);
+
+			const result = await buildHelper(credentialsOverwrites).applyDefaultsAndOverwrites(
+				mock<IWorkflowExecuteAdditionalData>({ variables: {} }),
+				{ useDynamicClientRegistration: true, clientId: 'registered-client-id' },
+				todoistOAuth2Type.name,
+				'internal',
+			);
+
+			expect(result).toMatchObject({
+				useDynamicClientRegistration: true,
+				serverUrl: 'https://todoist.com',
+				clientId: 'registered-client-id',
+			});
+		});
+
 		test('leaves user-editable endpoint fields untouched', async () => {
 			const genericOAuth2Type: ICredentialType = {
 				name: 'oAuth2Api',
@@ -3177,6 +3222,28 @@ describe('CredentialsHelper', () => {
 
 			expect(mockTokenRequest).toHaveBeenCalledTimes(2);
 			expect(refreshed).toMatchObject({ accessToken: 'TOKEN_2' });
+		});
+
+		test('mints a token for the request only when the node carries no credentials', async () => {
+			// A credential test passes the node without credentials: the posted values may
+			// differ from the stored credential, so nothing is written back.
+			credentials.accessToken = 'CACHED';
+			const refreshed = await credentialsHelper.preAuthentication(
+				helpers,
+				credentials,
+				'salesforceJwtApi',
+				{ ...node, credentials: undefined },
+				true,
+			);
+
+			expect(mockTokenRequest).toHaveBeenCalledTimes(1);
+			expect(refreshed).toMatchObject({
+				accessToken: 'TOKEN_1',
+				instanceUrl: 'https://acme.my.salesforce.com',
+			});
+			expect(credentials.accessToken).toBe('TOKEN_1');
+			expect(getSpy).not.toHaveBeenCalled();
+			expect(updateSpy).not.toHaveBeenCalled();
 		});
 	});
 	describe('preAuthentication domain restrictions', () => {

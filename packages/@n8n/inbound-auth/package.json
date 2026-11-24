@@ -1,6 +1,6 @@
 {
   "name": "@n8n/inbound-auth",
-  "version": "0.7.4",
+  "version": "0.8.3",
   "scripts": {
     "clean": "rimraf dist .turbo",
     "dev": "pnpm watch",
@@ -23,6 +23,7 @@
     "dist/**/*"
   ],
   "dependencies": {
+    "@n8n/errors": "workspace:*",
     "@n8n/permissions": "workspace:*",
     "n8n-workflow": "workspace:*"
   },

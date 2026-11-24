@@ -160,7 +160,7 @@ describe('WorkflowPublicationApplier', () => {
 		// `clearAllMocks` keeps implementations, so restore the clearing default.
 		policyEnforcementService.hasChecksFor.mockReturnValue(true);
 		policyEnforcementService.enforceWorkflowPublish.mockResolvedValue(mock());
-		credentialsPermissionChecker.check.mockResolvedValue();
+		credentialsPermissionChecker.check.mockResolvedValue({ personalCredentialsCount: 0 });
 		workflowPublisherService.findPublisherUserIdForAccessCheck.mockResolvedValue('publisher-1');
 	});
 

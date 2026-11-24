@@ -960,7 +960,7 @@ describe('MemoryGuardService', () => {
 
 			await stopOnce('3');
 
-			expect(deactivateWorkflowAsSystem).toHaveBeenCalledWith('repeat');
+			expect(deactivateWorkflowAsSystem).toHaveBeenCalledWith('repeat', 'memory-guard');
 			expect(mailer.notifyWorkflowAutodeactivated).toHaveBeenCalledWith(
 				expect.objectContaining({ reason: 'memory-pressure' }),
 			);
@@ -1000,7 +1000,7 @@ describe('MemoryGuardService', () => {
 
 			await stopOnce('4');
 
-			expect(deactivateWorkflowAsSystem).toHaveBeenCalledWith('repeat');
+			expect(deactivateWorkflowAsSystem).toHaveBeenCalledWith('repeat', 'memory-guard');
 			expect(mailer.notifyWorkflowAutodeactivated).toHaveBeenCalled();
 		});
 
@@ -1058,7 +1058,7 @@ describe('MemoryGuardService', () => {
 
 			await stopOnce('1');
 
-			expect(deactivateWorkflowAsSystem).toHaveBeenCalledWith('repeat');
+			expect(deactivateWorkflowAsSystem).toHaveBeenCalledWith('repeat', 'memory-guard');
 		});
 
 		it('should not count stops of manual executions', async () => {
@@ -1131,7 +1131,7 @@ describe('MemoryGuardService', () => {
 				expect.stringContaining('(hold-limit)'),
 				expect.stringContaining('(hold-limit)'),
 			]);
-			expect(deactivateWorkflowAsSystem).toHaveBeenCalledWith('repeat');
+			expect(deactivateWorkflowAsSystem).toHaveBeenCalledWith('repeat', 'memory-guard');
 		});
 
 		it('should not count a stop when a successful execution of the workflow ends during it', async () => {
@@ -1181,7 +1181,7 @@ describe('MemoryGuardService', () => {
 			endLookup();
 			await vi.advanceTimersByTimeAsync(0);
 
-			expect(deactivateWorkflowAsSystem).toHaveBeenCalledWith('repeat');
+			expect(deactivateWorkflowAsSystem).toHaveBeenCalledWith('repeat', 'memory-guard');
 		});
 
 		it('should start the count again after a successful execution of the workflow', async () => {
@@ -1213,7 +1213,7 @@ describe('MemoryGuardService', () => {
 
 			await stopOnce('3');
 
-			expect(deactivateWorkflowAsSystem).toHaveBeenCalledWith('repeat');
+			expect(deactivateWorkflowAsSystem).toHaveBeenCalledWith('repeat', 'memory-guard');
 		});
 	});
 

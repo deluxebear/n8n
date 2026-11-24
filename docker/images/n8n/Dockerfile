@@ -1,4 +1,4 @@
-ARG NODE_VERSION=26.13.0
+# check=skip=InvalidDefaultArgInFrom
 ARG N8N_VERSION=snapshot
 
 # The digests pin patched Node for amd64 and arm64. Change each tag and digest together.
@@ -45,7 +45,7 @@ WORKDIR /build/node_modules/@confluentinc/kafka-javascript
 RUN BUILD_LIBRDKAFKA=0 node "$NODE_GYP" rebuild --release
 
 # A separate workflow builds the base image. A new base reaches this image only
-# when you change RUNTIME_IMAGE above.
+# when you change its pin in docker/docker-bake.hcl.
 FROM ${RUNTIME_IMAGE}
 
 ARG N8N_VERSION

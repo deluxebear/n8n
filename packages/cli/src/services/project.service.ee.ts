@@ -39,6 +39,7 @@ import {
 	NotFoundError,
 	UserError,
 } from '@n8n/errors';
+import type { PublicApiCaller } from '@/public-api/public-api-client';
 import { UserManagementMailer } from '@/user-management/email';
 
 import { OwnershipService } from './ownership.service';
@@ -146,7 +147,11 @@ export class ProjectService {
 	async deleteProject(
 		user: User,
 		projectId: string,
-		{ migrateToProject }: { migrateToProject?: string } = {},
+		{
+			migrateToProject,
+			publicApi = false,
+		}: { migrateToProject?: string; publicApi?: PublicApiCaller } = {},
+		ctx: OperationContext = {},
 	) {
 		const workflowService = await this.workflowService;
 		const credentialsService = await this.credentialsService;
@@ -212,15 +217,13 @@ export class ProjectService {
 		const ownedSharedWorkflows = await this.sharedWorkflowRepository.find({
 			where: { projectId: project.id, role: 'workflow:owner' },
 		});
+		const workflowIds = ownedSharedWorkflows.map((sw) => sw.workflowId);
 
 		if (targetProject) {
-			await this.sharedWorkflowRepository.makeOwner(
-				ownedSharedWorkflows.map((sw) => sw.workflowId),
-				targetProject.id,
-			);
+			await this.sharedWorkflowRepository.makeOwner(workflowIds, targetProject.id);
 		} else {
 			for (const sharedWorkflow of ownedSharedWorkflows) {
-				await workflowService.delete(user, sharedWorkflow.workflowId, true);
+				await workflowService.delete(user, sharedWorkflow.workflowId, true, { publicApi }, ctx);
 			}
 		}
 
@@ -232,7 +235,7 @@ export class ProjectService {
 			);
 		} else {
 			for (const sharedCredential of ownedCredentials) {
-				await credentialsService.delete(user, sharedCredential.credentials.id);
+				await credentialsService.delete(user, sharedCredential.credentials.id, {}, ctx);
 			}
 		}
 
@@ -266,7 +269,11 @@ export class ProjectService {
 
 		// 8. Remove agent data before project removal cascades delete its records.
 		if (this.moduleRegistry.isActive('agents')) {
-			await (await this.agentProjectCleanupService).cleanupProject(project.id);
+			await (await this.agentProjectCleanupService).cleanupProject(project.id, {
+				actor: user,
+				transferId: targetProject?.id,
+				ctx,
+			});
 		}
 
 		// Capture member user IDs before the project (and its relations) are removed,
@@ -281,6 +288,18 @@ export class ProjectService {
 				await (await this.agentProjectCleanupService).completeProjectDeletion(projectId, ctx);
 			}
 		});
+
+		if (targetProject) {
+			// The cascade removes the source owner rows. Invalidate after the transaction commits.
+			try {
+				await this.ownershipService.invalidateWorkflowProjectCacheByIds(workflowIds);
+			} catch (error) {
+				this.logger.warn('Failed to invalidate the workflow project cache on project delete', {
+					projectId,
+					error: error instanceof Error ? error.message : error,
+				});
+			}
+		}
 
 		// The cascade deletes the project's variables. Refresh the cache so their keys are free again.
 		try {
@@ -600,12 +619,16 @@ export class ProjectService {
 		sharer: User,
 		project: Project,
 		newSharees: Array<{ userId: string; role: AssignableProjectRole }>,
+		publicApi: PublicApiCaller,
+		ctx: OperationContext = {},
 	) {
 		if (newSharees.length === 0) return;
 		await this.userManagementMailer.notifyProjectShared({
 			sharer,
 			newSharees,
 			project: { id: project.id, name: project.name },
+			publicApi,
+			ctx,
 		});
 	}
 
@@ -626,9 +649,18 @@ export class ProjectService {
 	 * Throws if the relations contain `project:personalOwner`.
 	 */
 	async addUsersToProject(
-		user: User,
-		projectId: string,
-		relations: Array<{ userId: string; role: AssignableProjectRole }>,
+		{
+			user,
+			projectId,
+			relations,
+			publicApi = false,
+		}: {
+			user: User;
+			projectId: string;
+			relations: Array<{ userId: string; role: AssignableProjectRole }>;
+			publicApi?: PublicApiCaller;
+		},
+		ctx: OperationContext = {},
 	) {
 		const project = await this.getTeamProjectWithRelations(projectId);
 		this.checkRolesLicensed(project, relations);
@@ -660,7 +692,7 @@ export class ProjectService {
 			})),
 		);
 
-		await this.notifyNewSharees(user, project, newSharees);
+		await this.notifyNewSharees(user, project, newSharees, publicApi, ctx);
 		await this.emitProjectMembersUpdated(user, projectId);
 	}
 
@@ -725,7 +757,7 @@ export class ProjectService {
 			added.push(...toInsert);
 		}
 
-		await this.notifyNewSharees(user, project, added);
+		await this.notifyNewSharees(user, project, added, false);
 		await this.emitProjectMembersUpdated(user, project.id);
 
 		return { project, added, conflicts };

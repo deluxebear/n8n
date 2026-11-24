@@ -5,12 +5,20 @@ import type { AgentJsonConfig, AgentPublishHistoryItemDto } from '@n8n/api-types
 import {
 	CredentialsFinderService,
 	type EventService,
+	NodeTypesProxy,
 	ProjectScopeService,
 	UrlService,
 } from '@n8n/backend-services';
 import { mockInstance, mockLogger } from '@n8n/backend-test-utils';
 import { OutboundHttp } from '@n8n/backend-network';
-import { GLOBAL_MEMBER_ROLE, User, type WorkflowRepository, type TransactionRunner } from '@n8n/db';
+import {
+	GLOBAL_MEMBER_ROLE,
+	type OperationContext,
+	User,
+	type WorkflowRepository,
+	type TransactionRunner,
+} from '@n8n/db';
+import type { SecurityContext } from '@n8n/permissions';
 import { Container } from '@n8n/di';
 import { TELEMETRY_EVENT } from '@n8n/telemetry';
 import type { Mock } from 'vitest';
@@ -72,7 +80,6 @@ import { getAgentConfigHash } from '@/modules/agents/utils/agent-config-hash';
 import type { ChatIntegrationRegistry } from '@/modules/agents/integrations/agent-chat-integration';
 import { McpRegistryService } from '@/modules/mcp-registry/registry/mcp-registry.service';
 import type { RegisterToolFn } from '@/modules/mcp/mcp.types';
-import { NodeTypes } from '@/node-types';
 import { OauthService } from '@/oauth/oauth.service';
 import { userHasScopes } from '@/permissions.ee/check-access';
 import { Telemetry } from '@/telemetry';
@@ -194,7 +201,7 @@ describe('McpAgentToolsService', () => {
 		agentModelCatalogService,
 		mockInstance(AttachableWorkflowsService),
 		mcpRegistryService,
-		mockInstance(NodeTypes),
+		mockInstance(NodeTypesProxy),
 		mockInstance(OauthService),
 		outboundHttp,
 		urlService,
@@ -326,9 +333,9 @@ describe('McpAgentToolsService', () => {
 		it('registers all agent tools and the reference resource', () => {
 			expect([...tools.keys()].sort()).toEqual(
 				[
+					'archive_agent',
 					'call_agent',
 					'create_agent',
-					'delete_agent',
 					'discover_agent_assets',
 					'get_agent',
 					'get_agent_builder_reference',
@@ -448,7 +455,7 @@ describe('McpAgentToolsService', () => {
 			['list_agent_versions', 'agent:read', identity],
 			['list_agent_sessions', 'agent:read', identity],
 			['get_agent_session', 'agent:read', { ...identity, sessionId: 'session-1' }],
-			['delete_agent', 'agent:delete', identity],
+			['archive_agent', 'agent:delete', identity],
 			['discover_agent_assets', 'agent:read', { projectId: 'project-1', kind: 'models' }],
 			[
 				'verify_agent_mcp_server',
@@ -500,7 +507,7 @@ describe('McpAgentToolsService', () => {
 			['list_agent_versions', identity],
 			['list_agent_sessions', identity],
 			['get_agent_session', { ...identity, sessionId: 'session-1' }],
-			['delete_agent', identity],
+			['archive_agent', identity],
 			[
 				'update_agent_integration',
 				{ ...identity, action: 'disconnect', type: 'slack', credentialId: 'cred-1' },
@@ -1894,6 +1901,123 @@ describe('McpAgentToolsService', () => {
 			expect(result.structuredContent).toMatchObject({ ok: false, code: 'execution_not_found' });
 		});
 
+		it('keeps long values truncated without pages by default', async () => {
+			const longReply = 'x'.repeat(10_000);
+			const longTurn = turn('execution-1');
+			longTurn.timeline = [{ type: 'text', content: longReply, timestamp: 1 }];
+			agentContextService.readSession.mockResolvedValue({
+				...sessionDetail,
+				executions: [longTurn],
+			});
+
+			const result = await callTool('get_agent_session', {
+				agentId: 'agent-1',
+				sessionId: 'session-1',
+			});
+
+			expect(result.structuredContent).toMatchObject({ ok: true });
+			expect(result.structuredContent).not.toHaveProperty('nextCursor');
+			expect(result.structuredContent.transcript).toContain('… [truncated]');
+			expect(result.structuredContent.transcript).not.toContain(longReply);
+		});
+
+		it('returns complete tool values in pages when maxToolValueLength is large', async () => {
+			const longOutput = 'o'.repeat(60_000);
+			const longTurn = turn('execution-1');
+			longTurn.timeline = [
+				{
+					type: 'tool-call',
+					kind: 'tool',
+					name: 'lookup_order',
+					toolCallId: 'call-1',
+					input: { orderId: 'BAD-1' },
+					output: longOutput,
+					startTime: 1,
+					endTime: 2,
+					success: true,
+				},
+			];
+			agentContextService.readSession.mockResolvedValue({
+				...sessionDetail,
+				executions: [longTurn, turn('execution-2')],
+			});
+			const args = { agentId: 'agent-1', sessionId: 'session-1', maxToolValueLength: 10_000_000 };
+
+			const first = await callTool('get_agent_session', args);
+			const second = await callTool('get_agent_session', {
+				...args,
+				cursor: first.structuredContent.nextCursor,
+			});
+
+			expect(first.structuredContent).toMatchObject({ ok: true, nextCursor: expect.any(String) });
+			expect(first.structuredContent.transcript).toHaveLength(40_000);
+			expect(second.structuredContent).toMatchObject({ ok: true, nextCursor: null });
+			const transcript = `${first.structuredContent.transcript}${second.structuredContent.transcript}`;
+			expect(transcript).toContain(`  Output: "${longOutput}"`);
+			expect(transcript).toContain('User: Message execution-2');
+			expect(transcript).not.toContain('… [truncated]');
+		});
+
+		it('leaves out tool values when maxToolValueLength is 0', async () => {
+			agentContextService.readSession.mockResolvedValue(sessionDetail);
+
+			const result = await callTool('get_agent_session', {
+				agentId: 'agent-1',
+				sessionId: 'session-1',
+				maxToolValueLength: 0,
+			});
+
+			expect(result.structuredContent).toMatchObject({ ok: true, nextCursor: null });
+			expect(result.structuredContent.transcript).toContain(
+				'Tool call: lookup_order | kind=tool | failed | 1ms\n',
+			);
+			expect(result.structuredContent.transcript).not.toContain('Input:');
+			expect(result.structuredContent.transcript).not.toContain('Output:');
+		});
+
+		it('returns only the requested turn in pages', async () => {
+			agentContextService.readSession.mockResolvedValue(sessionDetail);
+
+			const result = await callTool('get_agent_session', {
+				agentId: 'agent-1',
+				sessionId: 'session-1',
+				executionId: 'execution-2',
+				maxToolValueLength: 0,
+			});
+
+			expect(result.structuredContent).toMatchObject({ ok: true, nextCursor: null });
+			expect(result.structuredContent.transcript).toContain('scope: single turn, turns: 1');
+			expect(result.structuredContent.transcript).toContain('User: Message execution-2');
+			expect(result.structuredContent.transcript).not.toContain('Message execution-1');
+		});
+
+		it('reports an unknown turn in pages', async () => {
+			agentContextService.readSession.mockResolvedValue(sessionDetail);
+
+			const result = await callTool('get_agent_session', {
+				agentId: 'agent-1',
+				sessionId: 'session-1',
+				executionId: 'execution-9',
+				maxToolValueLength: 0,
+			});
+
+			expect(result.isError).toBe(true);
+			expect(result.structuredContent).toMatchObject({ ok: false, code: 'execution_not_found' });
+		});
+
+		it('reports a cursor that does not match the transcript', async () => {
+			agentContextService.readSession.mockResolvedValue(sessionDetail);
+
+			const result = await callTool('get_agent_session', {
+				agentId: 'agent-1',
+				sessionId: 'session-1',
+				cursor: 'not-a-cursor',
+			});
+
+			expect(result.isError).toBe(true);
+			expect(result.structuredContent).toMatchObject({ ok: false, code: 'invalid_cursor' });
+		});
+
 		it('reports an unknown session', async () => {
 			agentContextService.readSession.mockResolvedValue(null);
 
@@ -2038,6 +2162,31 @@ describe('McpAgentToolsService', () => {
 			const [slack, linear] = result.structuredContent.data as Array<Record<string, unknown>>;
 			expect(slack.setupGuidance).toEqual(expect.stringContaining('no credentialId'));
 			expect(linear).not.toHaveProperty('setupGuidance');
+		});
+
+		it('describes the required webhook settings in kind=integrations', async () => {
+			integrationPersistenceService.listChatIntegrations.mockReturnValue([
+				{
+					type: 'webhook',
+					label: 'Webhook',
+					icon: 'webhook',
+					credentialTypes: ['httpHeaderAuth', 'jwtAuth'],
+				},
+			] as never);
+
+			const result = await callTool('discover_agent_assets', {
+				projectId: 'project-1',
+				kind: 'integrations',
+			});
+
+			const [webhook] = result.structuredContent.data as Array<Record<string, unknown>>;
+			expect(webhook).toMatchObject({
+				settingsRequired: true,
+				settingsSchema: {
+					properties: { authentication: { enum: ['none', 'headerAuth', 'jwtAuth'] } },
+				},
+				settingsGuidance: expect.stringContaining('Omit credentialId'),
+			});
 		});
 
 		it('lists MCP registry servers for kind=mcpServers without a query', async () => {
@@ -2589,6 +2738,62 @@ describe('McpAgentToolsService', () => {
 			});
 		});
 
+		it('connects a channel that runs without a credential', async () => {
+			const settings = { authentication: 'none' };
+
+			await callTool('update_agent_integration', {
+				agentId: 'agent-1',
+				action: 'connect',
+				type: 'webhook',
+				settings,
+			});
+
+			expect(integrationManagementService.connect).toHaveBeenCalledWith({
+				agent: expect.objectContaining({ id: 'agent-1' }),
+				user,
+				integration: { type: 'webhook', credentialId: '', settings },
+				modifiedBy: 'mcp',
+			});
+		});
+
+		it('leaves the webhook settings check to the integration', async () => {
+			integrationManagementService.connect.mockRejectedValueOnce(
+				new Error('This webhook authentication needs a credential'),
+			);
+
+			const result = await callTool('update_agent_integration', {
+				agentId: 'agent-1',
+				action: 'connect',
+				type: 'webhook',
+				settings: { authentication: 'headerAuth' },
+			});
+
+			expect(integrationManagementService.connect).toHaveBeenCalledWith(
+				expect.objectContaining({
+					integration: {
+						type: 'webhook',
+						credentialId: '',
+						settings: { authentication: 'headerAuth' },
+					},
+				}),
+			);
+			expect(result.structuredContent).toMatchObject({
+				error: 'This webhook authentication needs a credential',
+			});
+		});
+
+		it('connects no other channel without a credential', async () => {
+			const result = await callTool('update_agent_integration', {
+				agentId: 'agent-1',
+				action: 'connect',
+				type: 'n8n_chat',
+				settings: { authentication: 'none' },
+			});
+
+			expect(result.isError).toBe(true);
+			expect(integrationManagementService.connect).not.toHaveBeenCalled();
+		});
+
 		it('requires settings for telegram integrations', async () => {
 			integrationManagementService.connect.mockRejectedValueOnce(
 				new Error('Telegram integration settings are required'),
@@ -3117,6 +3322,44 @@ describe('McpAgentToolsService', () => {
 			expect(integrationManagementService.disconnect).not.toHaveBeenCalled();
 		});
 
+		it('disconnects a channel that has no credential', async () => {
+			agentsService.findByIdForUser.mockResolvedValue(
+				agentEntity({
+					integrations: [
+						{ type: 'webhook', credentialId: '', settings: { authentication: 'none' } },
+					],
+				}),
+			);
+			const { credentialId: _credentialId, ...withoutCredential } = input;
+
+			await callTool('update_agent_integration', { ...withoutCredential, type: 'webhook' });
+
+			expect(integrationManagementService.disconnect).toHaveBeenCalledWith(
+				expect.objectContaining({ type: 'webhook', credentialId: '' }),
+			);
+		});
+
+		it('requires a credential to disconnect a webhook that has one', async () => {
+			agentsService.findByIdForUser.mockResolvedValue(
+				agentEntity({
+					integrations: [
+						{ type: 'webhook', credentialId: 'cred-1', settings: { authentication: 'headerAuth' } },
+					],
+				}),
+			);
+			const { credentialId: _credentialId, ...withoutCredential } = input;
+
+			const result = await callTool('update_agent_integration', {
+				...withoutCredential,
+				type: 'webhook',
+			});
+
+			expect(result.structuredContent).toMatchObject({
+				error: 'credentialId is required to disconnect',
+			});
+			expect(integrationManagementService.disconnect).not.toHaveBeenCalled();
+		});
+
 		it('falls back to a plain disconnect for an unknown integration type', async () => {
 			agentsService.findByIdForUser.mockResolvedValue(agentEntity({ integrations: [] }));
 
@@ -3128,23 +3371,57 @@ describe('McpAgentToolsService', () => {
 		});
 	});
 
-	describe('delete_agent', () => {
-		it('deletes an existing agent', async () => {
-			agentsService.delete.mockResolvedValue(true);
+	describe('archive_agent', () => {
+		it('archives an existing agent', async () => {
+			const result = await callTool('archive_agent', {
+				projectId: 'project-1',
+				agentId: 'agent-1',
+			});
 
-			const result = await callTool('delete_agent', { projectId: 'project-1', agentId: 'agent-1' });
-
-			expect(agentsService.delete).toHaveBeenCalledWith('agent-1', 'project-1');
-			expect(result.structuredContent).toEqual({ ok: true, deleted: true, agentId: 'agent-1' });
+			expect(agentPublishService.archiveAgent).toHaveBeenCalledWith(
+				'agent-1',
+				'project-1',
+				user,
+				undefined,
+				'mcp',
+				{},
+			);
+			expect(result.structuredContent).toEqual({ ok: true, archived: true, agentId: 'agent-1' });
 		});
 
-		it('returns an error result when the agent does not exist', async () => {
-			agentsService.delete.mockResolvedValue(false);
+		it('passes the operation context to the archive', async () => {
+			const ctx: OperationContext = {
+				security: mock<SecurityContext>({ subIdentityId: 'login-1' }),
+			};
+			const contextTools = new Map<string, RegisteredTool>();
+			const registerTool: RegisterToolFn = (tool) => {
+				contextTools.set(tool.name, {
+					config: tool.config,
+					handler: tool.handler as unknown as RegisteredTool['handler'],
+				});
+			};
+			service.registerTools(registerTool, vi.fn(), user, undefined, ctx);
 
-			const result = await callTool('delete_agent', { projectId: 'project-1', agentId: 'nope' });
+			await contextTools
+				.get('archive_agent')
+				?.handler(
+					{ projectId: 'project-1', agentId: 'agent-1' },
+					{ signal: new AbortController().signal },
+				);
+
+			expect(agentPublishService.archiveAgent.mock.calls[0][5]).toBe(ctx);
+		});
+
+		it('returns an error result for an archived agent', async () => {
+			agentsService.findByIdForUser.mockResolvedValue(agentEntity({ isArchived: true }));
+
+			const result = await callTool('archive_agent', {
+				projectId: 'project-1',
+				agentId: 'agent-1',
+			});
 
 			expect(result.isError).toBe(true);
-			expect(result.structuredContent).toMatchObject({ error: 'Agent "nope" not found' });
+			expect(agentPublishService.archiveAgent).not.toHaveBeenCalled();
 		});
 	});
 });

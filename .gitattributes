@@ -8,3 +8,6 @@ docker/images/node-pc/patches/0001-v8-normalize-one-byte-ast-strings.patch white
 # Rendered snapshots retain whitespace from the HTML serializer.
 packages/frontend/editor-ui/src/app/components/__snapshots__/WhatsNewModal.test.ts.snap whitespace=-blank-at-eol
 packages/frontend/editor-ui/src/features/ai/instanceAi/__tests__/__snapshots__/ArtifactCard.test.ts.snap whitespace=-blank-at-eol
+
+# Patch context lines can start with a space followed by a tab.
+patches/reka-ui@2.5.0.patch whitespace=-blank-at-eol,-space-before-tab

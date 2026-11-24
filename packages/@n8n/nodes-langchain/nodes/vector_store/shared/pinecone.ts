@@ -5,6 +5,7 @@ import type { EmbeddingsInterface } from '@langchain/core/embeddings';
 import { VectorStore } from '@langchain/core/vectorstores';
 import { PineconeStore } from '@langchain/pinecone';
 import { Pinecone } from '@pinecone-database/pinecone';
+import { OperationalError, UserError } from '@n8n/errors';
 import { isRecord } from '@n8n/utils/is-record';
 import type {
 	IExecuteFunctions,
@@ -13,7 +14,7 @@ import type {
 	RequestUrl,
 	WithRequestTarget,
 } from 'n8n-workflow';
-import { OperationalError, requestUrl, UserError } from 'n8n-workflow';
+import { requestUrl } from 'n8n-workflow';
 
 // @langchain/pinecone needs SDK 5 (API 2025-01), and the first SDK with the documents API (v9)
 // can't be installed next to it (pnpm deploy rejects two versions of one peer). So the

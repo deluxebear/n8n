@@ -2,6 +2,7 @@ import {
 	APPROVAL_TOOL_NAME,
 	N8N_CHAT_ACTION_TOOL_NAME,
 	WAIT_TOOL_NAME,
+	instanceAiApprovalAskReasonSchema,
 	type AgentBuilderOpenSuspension,
 	type AgentPersistedMessageDto,
 } from '@n8n/api-types';
@@ -24,6 +25,7 @@ import type { ToolCallState } from './constants';
 import { isDelegateSubAgentTool, isFailedDelegateOutput } from './delegateTool';
 import type { AgentsChatInteractionExtension } from './interactionRegistry';
 import { summariseToolCall } from './interactiveSummary';
+import { addReplyAttachments, newReplyAttachments } from './replyFiles';
 import { isPolicyRefusedToolOutput } from './toolPolicyRefusal';
 import type {
 	AgentsChatHostEvent,
@@ -142,6 +144,7 @@ export function parseApprovalInput(value: unknown): ApprovalInput | undefined {
 	if (!isRecord(value)) return undefined;
 	if (value.type !== 'approval') return undefined;
 	if (typeof value.toolName !== 'string' || value.toolName.length === 0) return undefined;
+	const askReason = instanceAiApprovalAskReasonSchema.safeParse(value.askReason);
 	return {
 		type: 'approval',
 		toolName: value.toolName,
@@ -149,6 +152,7 @@ export function parseApprovalInput(value: unknown): ApprovalInput | undefined {
 		...(typeof value.displayName === 'string' &&
 			value.displayName.length > 0 && { displayName: value.displayName }),
 		args: value.args,
+		...(askReason.success && { askReason: askReason.data }),
 	};
 }
 
@@ -373,6 +377,7 @@ export function convertDbMessages(
 					displaySummary: summariseToolCall(part.toolName, output, part.input),
 				};
 				toolCalls.push(toolCall);
+				attachments.push(...newReplyAttachments(attachments, toolCall));
 				if (msg.executionStatus === 'cancelled') continue;
 
 				const rebuilt = rebuildInteractiveFromHistory(toolCall, extensions);
@@ -472,6 +477,7 @@ export function applyOpenSuspensions(
 				if (suspension.suspendPayload !== undefined) {
 					toolCall.suspendPayload = suspension.suspendPayload;
 				}
+				addReplyAttachments(msg, toolCall);
 				const rebuilt = rebuildInteractiveFromHistory(toolCall, extensions);
 				if (rebuilt) {
 					rebuilt.runId = suspension.runId;

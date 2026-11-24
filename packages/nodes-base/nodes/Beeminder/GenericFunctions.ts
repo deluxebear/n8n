@@ -9,7 +9,8 @@ import type {
 	RequestPath,
 	WithRequestTarget,
 } from 'n8n-workflow';
-import { UserError, requestUrl } from 'n8n-workflow';
+import { UserError } from '@n8n/errors';
+import { requestUrl } from 'n8n-workflow';
 
 function isValidAuthenticationMethod(value: unknown): value is 'apiToken' | 'oAuth2' {
 	return typeof value === 'string' && ['apiToken', 'oAuth2'].includes(value);

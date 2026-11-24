@@ -23,8 +23,10 @@ import {
 	SUB_AGENT_MAX_CHILDREN_DEFAULT,
 	SUB_AGENT_TASK_DIFFICULTIES,
 	buildProxyHeaders,
+	hasChannelRuntime,
 	isCredentialAgentIntegration,
 	type AgentIntegrationConfig,
+	type AgentToolGuardrailConfig,
 	type BudgetGuardrailConfig,
 	type AgentJsonConfig,
 	type AgentJsonMcpServerConfig,
@@ -34,7 +36,7 @@ import {
 	type SubAgentSource,
 	type SubAgentTaskDifficulty,
 } from '@n8n/api-types';
-import { Logger } from '@n8n/backend-common';
+import { getN8nVersion, Logger } from '@n8n/backend-common';
 import { OutboundHttp } from '@n8n/backend-network';
 import { AgentsConfig } from '@n8n/config';
 import type { User } from '@n8n/db';
@@ -44,7 +46,6 @@ import { UserError } from '@n8n/errors';
 import { nanoid } from 'nanoid';
 
 import { ActiveExecutions } from '@/active-executions';
-import { N8N_VERSION } from '@/constants';
 import { CredentialsFinderService } from '@n8n/backend-services';
 import { CredentialsService } from '@/credentials/credentials.service';
 import { SubworkflowPolicyChecker } from '@/executions/pre-execution-checks';
@@ -56,20 +57,21 @@ import { userHasScopes } from '@/permissions.ee/check-access';
 import { AiService } from '@/services/ai.service';
 import { ProxyTokenManager } from '@/services/proxy-token-manager';
 import { createAiMcpFetch, createAiProxyFetch, createWebSearchFetch } from '@/utils/ai-proxy-fetch';
+import { sanitizeSandboxErrorDetail } from '@/utils/sanitize-sandbox-error-detail';
 import { KnowledgeAvailabilityService } from '@/modules/knowledge/knowledge-availability.service';
-import { KnowledgeFileRepository } from '@/modules/knowledge/repositories/knowledge-file.repository';
+import type { KnowledgeConsumerScope } from '@/modules/knowledge/knowledge-consumer-scope';
+import { KnowledgeRetrievalService } from '@/modules/knowledge/retrieval/knowledge-retrieval.service';
 import { WorkflowRunner } from '@/workflow-runner';
 import { CallableWorkflowLoader } from '@/workflows/callable/callable-workflow-loader.service';
 import { CallableWorkflowUnavailableError } from '@/workflows/callable/callable-workflow-unavailable.error';
 import { WorkflowFinderService } from '@/workflows/workflow-finder.service';
 
 import { AgentChatAttachmentService } from './agent-chat-attachment.service';
-import { AgentKnowledgeMirrorService } from './agent-knowledge-mirror.service';
+import type { AgentCredentialProvider } from './agent-credential-provider.contracts';
 import { AgentKnowledgeUsageTracker } from './agent-knowledge-usage-tracker';
 import type { AgentSandboxPrincipalHash } from './agent-sandbox-principal';
 import {
 	AgentSandboxRuntimeService,
-	sanitizeSandboxErrorDetail,
 	type AgentSandboxRuntime,
 } from './agent-sandbox-runtime.service';
 import { AgentWorkspaceService } from './agent-workspace.service';
@@ -140,6 +142,8 @@ export interface ReconstructedAgentRuntime {
 	 * classifier — a depleted wallet ends the run with `budget.credits`.
 	 */
 	modelCredentialGatewayManaged?: boolean;
+	/** Saved tool guardrail config. Absent when the agent has none. */
+	toolGuardrails?: AgentToolGuardrailConfig[];
 }
 
 export interface SubAgentDelegationConfig {
@@ -151,7 +155,7 @@ export interface ReconstructAgentRuntimeParams extends AgentRuntimeAssets {
 	config: AgentJsonConfig;
 	memoryOwnerAgentId: string;
 	projectId: string;
-	credentialProvider: CredentialProvider;
+	credentialProvider: AgentCredentialProvider;
 	runtimeProfile: AgentRuntimeProfile;
 	/**
 	 * Telemetry classification of the run this runtime serves. Baked in at build
@@ -346,7 +350,6 @@ export class AgentRuntimeReconstructionService {
 	constructor(
 		private readonly logger: Logger,
 		private readonly agentRepository: AgentRepository,
-		private readonly agentFileRepository: KnowledgeFileRepository,
 		private readonly activeExecutions: ActiveExecutions,
 		private readonly workflowRepository: WorkflowRepository,
 		private readonly n8nCheckpointStorage: N8NCheckpointStorage,
@@ -359,7 +362,7 @@ export class AgentRuntimeReconstructionService {
 		private readonly aiService: AiService,
 		private readonly outboundHttp: OutboundHttp,
 		private readonly agentWorkspaceService: AgentWorkspaceService,
-		private readonly agentKnowledgeMirrorService: AgentKnowledgeMirrorService,
+		private readonly knowledgeRetriever: KnowledgeRetrievalService,
 		private readonly credentialsFinderService: CredentialsFinderService,
 		private readonly workflowFinderService: WorkflowFinderService,
 		private readonly agentChatAttachmentService: AgentChatAttachmentService,
@@ -748,6 +751,9 @@ export class AgentRuntimeReconstructionService {
 			...(options.config.credential === AI_GATEWAY_MANAGED_TAG
 				? { modelCredentialGatewayManaged: true }
 				: {}),
+			...(options.config.config?.guardrails?.tools?.length
+				? { toolGuardrails: options.config.config.guardrails.tools }
+				: {}),
 		};
 	}
 
@@ -806,6 +812,7 @@ export class AgentRuntimeReconstructionService {
 		const aiMcpFetch = instrumentation?.mcpFetch ?? createAiMcpFetch(this.outboundHttp);
 		const webSearchFetch = createWebSearchFetch(this.outboundHttp);
 		const buildMcpClient = this.makeMcpClientFactory(options, aiMcpFetch, mcpServerAttributions);
+		const modelFetch = instrumentation?.modelFetch ?? aiProxyFetch;
 		const reconstructed = await buildFromJson(config, toolDescriptors, {
 			toolExecutor,
 			credentialProvider,
@@ -821,7 +828,7 @@ export class AgentRuntimeReconstructionService {
 				await this.resolveManagedEmbeddingProviderOptions(projectId),
 			onVectorStoreSearch: (runId) =>
 				this.knowledgeUsageTracker.startToolCall(runId, 'vector_store_search'),
-			modelFetch: instrumentation?.modelFetch ?? aiProxyFetch,
+			modelFetch: credentialProvider.createAiGatewayTokenRefreshFetch?.(modelFetch) ?? modelFetch,
 			fallbackWebSearch: instrumentation?.webSearch,
 			// Only the mock MCP transport makes attaching auth-pending servers safe.
 			attachAuthPendingMcpServers: instrumentation?.mcpFetch !== undefined,
@@ -987,7 +994,7 @@ export class AgentRuntimeReconstructionService {
 					headers.set(key, value);
 				}
 				for (const [key, value] of Object.entries(
-					buildProxyHeaders({ feature: 'agent-builder', n8nVersion: N8N_VERSION }),
+					buildProxyHeaders({ feature: 'agent-builder', n8nVersion: getN8nVersion() }),
 				)) {
 					headers.set(key, value);
 				}
@@ -1115,10 +1122,11 @@ export class AgentRuntimeReconstructionService {
 		const parentWorkspaceHandle = await this.attachWorkspace(params);
 		throwIfAborted(params.abortSignal);
 		const { agent, agentId, projectId } = params;
+		const scope: KnowledgeConsumerScope = { kind: 'agent', projectId, agentId };
 		// Module check first, so the file repository is not touched while knowledge is off.
 		const hasFiles =
 			this.knowledgeAvailabilityService.isModuleActive() &&
-			(await this.agentFileRepository.hasFilesForAgent(agentId, {}));
+			(await this.knowledgeRetriever.hasFiles(scope));
 		throwIfAborted(params.abortSignal);
 		if (hasFiles) {
 			const { createKnowledgeRetrievalTools } = await import(
@@ -1127,9 +1135,8 @@ export class AgentRuntimeReconstructionService {
 			throwIfAborted(params.abortSignal);
 			agent.tool(
 				createKnowledgeRetrievalTools({
-					projectId,
-					agentId,
-					knowledgeMirrorService: this.agentKnowledgeMirrorService,
+					scope,
+					retriever: this.knowledgeRetriever,
 					startToolCall: (runId, call) => this.knowledgeUsageTracker.startToolCall(runId, call),
 				}),
 			);
@@ -1203,7 +1210,7 @@ export class AgentRuntimeReconstructionService {
 
 		const descriptors = this.createIntegrationDescriptors(
 			agentId,
-			credentialIntegrations.filter(isCredentialAgentIntegration),
+			credentialIntegrations.filter(hasChannelRuntime),
 			integrationRegistry,
 		);
 

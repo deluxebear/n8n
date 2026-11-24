@@ -1,10 +1,10 @@
 import { retryabilityFromError } from '@n8n/backend-network';
+import { UserError } from '@n8n/errors';
 import { sleep } from '@n8n/utils/sleep';
 import {
 	decodePathValue,
 	NodeApiError,
 	NodeOperationError,
-	UserError,
 	requestPath,
 	requestUrl,
 } from 'n8n-workflow';

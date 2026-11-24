@@ -152,6 +152,10 @@ export class Github implements INodeType {
 						value: 'review',
 					},
 					{
+						name: 'Secret',
+						value: 'secret',
+					},
+					{
 						name: 'User',
 						value: 'user',
 					},
@@ -462,6 +466,27 @@ export class Github implements INodeType {
 					},
 				],
 				default: 'create',
+			},
+
+			{
+				displayName: 'Operation',
+				name: 'operation',
+				type: 'options',
+				noDataExpression: true,
+				displayOptions: {
+					show: {
+						resource: ['secret'],
+					},
+				},
+				options: [
+					{
+						name: 'Create or Update',
+						value: 'createOrUpdate',
+						description: 'Create or update a repository secret',
+						action: 'Create or update a repository secret',
+					},
+				],
+				default: 'createOrUpdate',
 			},
 
 			{
@@ -2060,6 +2085,50 @@ export class Github implements INodeType {
 			},
 
 			// ----------------------------------
+			//         secret
+			// ----------------------------------
+
+			// ----------------------------------
+			//         secret:createOrUpdate
+			// ----------------------------------
+			{
+				displayName: 'Secret Name',
+				name: 'secretName',
+				// The identifier of a secret is not itself sensitive — GitHub displays it in
+				// the UI and API — so it stays visible; only 'Secret Value' below is masked.
+				// eslint-disable-next-line n8n-nodes-base/node-param-type-options-password-missing
+				type: 'string',
+				default: '',
+				required: true,
+				displayOptions: {
+					show: {
+						resource: ['secret'],
+						operation: ['createOrUpdate'],
+					},
+				},
+				placeholder: 'MY_SECRET_NAME',
+				description:
+					'The name of the secret. Must contain only alphanumeric characters ([a-z], [A-Z], [0-9]) or underscores (_). Spaces are not allowed. Must not start with GITHUB_ or a number.',
+			},
+			{
+				displayName: 'Secret Value',
+				name: 'secretValue',
+				type: 'string',
+				typeOptions: {
+					password: true,
+				},
+				default: '',
+				required: true,
+				displayOptions: {
+					show: {
+						resource: ['secret'],
+						operation: ['createOrUpdate'],
+					},
+				},
+				description: 'The value of the secret. This will be encrypted before being stored.',
+			},
+
+			// ----------------------------------
 			//       user:getRepositories
 			// ----------------------------------
 			{
@@ -2392,6 +2461,7 @@ export class Github implements INodeType {
 			'review:create',
 			'review:get',
 			'review:update',
+			'secret:createOrUpdate',
 			'user:invite',
 			'workflow:disable',
 			'workflow:dispatch',
@@ -3233,6 +3303,11 @@ export class Github implements INodeType {
 				}
 
 				if (fullOperation === 'release:delete') {
+					responseData = { success: true };
+				}
+
+				if (fullOperation === 'secret:createOrUpdate') {
+					// GitHub returns empty body on success (201 for new, 204 for update)
 					responseData = { success: true };
 				}
 

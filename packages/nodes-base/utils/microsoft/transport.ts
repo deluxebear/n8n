@@ -10,13 +10,8 @@ import type {
 	LegacyRequestOptions,
 	RequestPath,
 } from 'n8n-workflow';
-import {
-	NodeApiError,
-	NodeOperationError,
-	UnexpectedError,
-	requestPath,
-	requestUrl,
-} from 'n8n-workflow';
+import { UnexpectedError } from '@n8n/errors';
+import { NodeApiError, NodeOperationError, requestPath, requestUrl } from 'n8n-workflow';
 
 import { capitalize } from '../utilities';
 

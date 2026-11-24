@@ -168,6 +168,9 @@ export async function encryptSecret(secretValue: string, publicKey: string): Pro
 	// pulled in on this path rather than by every node that imports this module.
 	const { default: nacl_factory } = await import('js-nacl');
 
+	// `instantiate` resolves to the same instance it passes to the callback, so awaiting it
+	// surfaces initialisation failures as a rejection instead of never invoking the callback.
+	// The callback is still required: js-nacl throws if it is not a function.
 	const nacl = await nacl_factory.instantiate(() => {});
 
 	const secretBytes = nacl.encode_utf8(secretValue);

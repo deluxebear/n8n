@@ -6,7 +6,6 @@ import type { GuardrailNotice } from './guardrail';
 import type { McpToolAnnotations } from './mcp';
 import type { AgentMessage } from './message';
 import type { ApprovalResumePayload } from '../../sdk/tool';
-import type { RuntimeSkillLoader } from '../../skills/types';
 import type { AgentEventData } from '../runtime/event';
 import type { BuiltTelemetry } from '../telemetry';
 import type { JSONObject, JSONValue } from '../utils/json';
@@ -27,8 +26,6 @@ export interface ToolSuspendOptions {
 }
 
 export interface ToolExecutionContext {
-	/** Load and retain instructions from this run's selected skill catalog. */
-	loadSkill?: RuntimeSkillLoader;
 	/** Agent run ID for the current execution. */
 	runId?: string;
 	/**
@@ -70,7 +67,6 @@ export interface ToolExecutionContext {
 }
 
 export interface ToolContext {
-	loadSkill?: ToolExecutionContext['loadSkill'];
 	/** AI SDK tool call ID for the current local tool execution. */
 	toolCallId?: string;
 	/** Exact model-facing name of the tool being executed. */
@@ -92,7 +88,6 @@ export interface ToolContext {
 }
 
 export interface InterruptibleToolContext<S = unknown, R = unknown> {
-	loadSkill?: ToolExecutionContext['loadSkill'];
 	/**
 	 * Suspend execution and send a payload to the consumer.
 	 * Must be used with `return await` — the branded return type signals
@@ -238,6 +233,25 @@ export interface BuiltTool {
 	 * Defaults to `true` when absent.
 	 */
 	readonly editable?: boolean;
+	/**
+	 * Marks a tool that runs other tools, such as the tool catalog's `call_tool`.
+	 * The runtime asks it which tool owns each call, so approval, suspension,
+	 * output trust, and result transforms are the owning tool's own.
+	 */
+	readonly dispatch?: ToolDispatch;
+}
+
+export interface ToolDispatch {
+	/**
+	 * The tool that handles this call and the input to give it, or `undefined`
+	 * to run the dispatcher itself (for example, to report an unknown tool).
+	 */
+	resolve(input: unknown): { tool: BuiltTool; input: unknown } | undefined;
+	/**
+	 * The dispatcher input for a model call to `toolName` made directly, or
+	 * `undefined` when this dispatcher does not own that tool.
+	 */
+	wrap(toolName: string, input: unknown): Record<string, unknown> | undefined;
 }
 
 /**

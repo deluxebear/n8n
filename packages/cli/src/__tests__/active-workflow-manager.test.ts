@@ -1,6 +1,11 @@
 /* eslint-disable @typescript-eslint/unbound-method */
-import type { Logger } from '@n8n/backend-common';
-import type { EventService, WorkflowSharingService, Publisher } from '@n8n/backend-services';
+import type { Logger, ModuleRegistry } from '@n8n/backend-common';
+import {
+	type EventService,
+	type WorkflowSharingService,
+	type Publisher,
+	WorkflowVersionedSettingsService,
+} from '@n8n/backend-services';
 import { mockLogger } from '@n8n/backend-test-utils';
 import type { WorkflowsConfig } from '@n8n/config';
 import type { Project, WorkflowEntity, WorkflowHistory, WorkflowRepository } from '@n8n/db';
@@ -55,6 +60,7 @@ import type { WorkflowExecutionService } from '@/workflows/workflow-execution.se
 import type { WorkflowPublisherService } from '@/workflows/workflow-publisher.service';
 import { WorkflowPushNotifier } from '@/workflows/workflow-push-notifier.service';
 import type { WorkflowStaticDataService } from '@/workflows/workflow-static-data.service';
+import type { MessageEventBus } from '@/eventbus/message-event-bus/message-event-bus';
 
 describe('ActiveWorkflowManager', () => {
 	const WORKFLOW_SCHEDULE_GROUP_TYPE = 'workflow';
@@ -72,6 +78,9 @@ describe('ActiveWorkflowManager', () => {
 	const ownershipService = mock<OwnershipService>();
 	const credentialsPermissionChecker = mock<CredentialsPermissionChecker>();
 	const workflowPublisherService = mock<WorkflowPublisherService>();
+	const workflowVersionedSettings = new WorkflowVersionedSettingsService(
+		mock<ModuleRegistry>({ eligibleModules: [] }),
+	);
 
 	beforeEach(() => {
 		vi.clearAllMocks();
@@ -79,7 +88,7 @@ describe('ActiveWorkflowManager', () => {
 		ownershipService.getWorkflowProjectCached.mockResolvedValue(mock<Project>({ id: 'project-1' }));
 		policyEnforcementService.hasChecksFor.mockReturnValue(true);
 		policyEnforcementService.enforceWorkflowPublish.mockResolvedValue(mock());
-		credentialsPermissionChecker.check.mockResolvedValue();
+		credentialsPermissionChecker.check.mockResolvedValue({ personalCredentialsCount: 0 });
 		activeWorkflowManager = new ActiveWorkflowManager(
 			mock<Logger>({ scoped: vi.fn().mockReturnValue(logger) }),
 			mock(),
@@ -103,6 +112,7 @@ describe('ActiveWorkflowManager', () => {
 			ownershipService,
 			credentialsPermissionChecker,
 			workflowPublisherService,
+			workflowVersionedSettings,
 		);
 	});
 
@@ -255,6 +265,7 @@ describe('ActiveWorkflowManager', () => {
 				ownershipService,
 				credentialsPermissionChecker,
 				workflowPublisherService,
+				workflowVersionedSettings,
 			);
 
 		const makeWorkflow = (overrides: Partial<WorkflowEntity> = {}) =>
@@ -392,7 +403,7 @@ describe('ActiveWorkflowManager', () => {
 					activeVersion: { versionId: 'v1', nodes: activeNodes, connections: {} },
 				} as unknown as WorkflowEntity;
 				workflowRepository.findById.mockResolvedValue(dbWorkflow);
-				credentialsPermissionChecker.check.mockResolvedValue();
+				credentialsPermissionChecker.check.mockResolvedValue({ personalCredentialsCount: 0 });
 				workflowPublisherService.findPublisherUserIdForAccessCheck.mockResolvedValue(undefined);
 				defaultNodeType = nodeTypes.getByNameAndVersion.getMockImplementation();
 				nodeTypes.getByNameAndVersion.mockImplementation((type) =>
@@ -845,8 +856,10 @@ describe('ActiveWorkflowManager', () => {
 		const workflowSharingService = mock<WorkflowSharingService>();
 		const workflowPushNotifier = new WorkflowPushNotifier(push, workflowSharingService);
 		const sharedUserIds = ['user-1', 'user-2'];
+		const eventBus = mock<MessageEventBus>();
 
 		beforeEach(() => {
+			eventBus.sendAuditEvent.mockReset();
 			workflowSharingService.getUserIdsWithAccessToWorkflowSafe.mockResolvedValue(sharedUserIds);
 			publisher.publishCommand.mockResolvedValue(undefined);
 			activeWorkflowManager = new ActiveWorkflowManager(
@@ -864,7 +877,7 @@ describe('ActiveWorkflowManager', () => {
 				publisher,
 				mock(),
 				mock<TriggerExecutionContextFactory>(),
-				mock(),
+				eventBus,
 				mock(), // scheduleTriggerJobRegistrar
 				mock(), // pollTriggerJobRegistrar
 				workflowPushNotifier,
@@ -872,7 +885,47 @@ describe('ActiveWorkflowManager', () => {
 				ownershipService,
 				credentialsPermissionChecker,
 				workflowPublisherService,
+				workflowVersionedSettings,
 			);
+		});
+
+		test('sends a deactivation audit event when a forwarded activation fails', async () => {
+			workflowRepository.findById.mockResolvedValue(
+				mock<WorkflowEntity>({ id: 'wf-1', name: 'My workflow', activeVersionId: 'v1' }),
+			);
+			vi.spyOn(activeWorkflowManager, 'add').mockRejectedValue(new Error('Some error'));
+
+			await activeWorkflowManager.handleAddWebhooksAndNonWebhookTriggers({
+				workflowId: 'wf-1',
+				activeVersionId: 'v1',
+				activationMode: 'activate',
+			});
+
+			expect(eventBus.sendAuditEvent).toHaveBeenCalledExactlyOnceWith({
+				eventName: 'n8n.audit.workflow.deactivated',
+				payload: {
+					workflowId: 'wf-1',
+					workflowName: 'My workflow',
+					deactivatedVersionId: 'v1',
+					activationMode: 'activate',
+					reason: 'Error',
+				},
+			});
+		});
+
+		test('sends no deactivation audit event when the workflow is already unpublished', async () => {
+			workflowRepository.findById.mockResolvedValue(
+				mock<WorkflowEntity>({ id: 'wf-1', name: 'My workflow', activeVersionId: null }),
+			);
+			vi.spyOn(activeWorkflowManager, 'add').mockRejectedValue(new Error('Some error'));
+
+			await activeWorkflowManager.handleAddWebhooksAndNonWebhookTriggers({
+				workflowId: 'wf-1',
+				activeVersionId: 'v1',
+				activationMode: 'activate',
+			});
+
+			expect(eventBus.sendAuditEvent).not.toHaveBeenCalled();
 		});
 
 		// The leader's generic failure path clears `activeVersionId`. A refusal must not
@@ -1133,6 +1186,7 @@ describe('ActiveWorkflowManager', () => {
 				ownershipService,
 				credentialsPermissionChecker,
 				workflowPublisherService,
+				workflowVersionedSettings,
 			);
 		});
 
@@ -1369,6 +1423,7 @@ describe('ActiveWorkflowManager', () => {
 				ownershipService,
 				credentialsPermissionChecker,
 				workflowPublisherService,
+				workflowVersionedSettings,
 			);
 		});
 
@@ -1826,6 +1881,7 @@ describe('ActiveWorkflowManager', () => {
 				ownershipService,
 				credentialsPermissionChecker,
 				workflowPublisherService,
+				workflowVersionedSettings,
 			);
 		});
 
@@ -2016,6 +2072,7 @@ describe('ActiveWorkflowManager', () => {
 				ownershipService,
 				credentialsPermissionChecker,
 				workflowPublisherService,
+				workflowVersionedSettings,
 			);
 
 		beforeEach(() => vi.clearAllMocks());
@@ -2097,6 +2154,7 @@ describe('ActiveWorkflowManager', () => {
 				ownershipService,
 				credentialsPermissionChecker,
 				workflowPublisherService,
+				workflowVersionedSettings,
 			);
 
 		const makeWorkflow = () => {

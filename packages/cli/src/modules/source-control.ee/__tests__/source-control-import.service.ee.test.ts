@@ -3572,7 +3572,7 @@ describe('SourceControlImportService', () => {
 		});
 
 		describe('deleteFoldersNotInWorkfolder', () => {
-			it('should call folderRepository.delete with correct ids', async () => {
+			it('deletes only workflow folders with the candidate ids', async () => {
 				const candidates = [
 					mock<SourceControlledFile>({ id: 'folder1' }),
 					mock<SourceControlledFile>({ id: 'folder2' }),
@@ -3585,6 +3585,7 @@ describe('SourceControlImportService', () => {
 
 				expect(folderRepository.delete).toHaveBeenCalledWith({
 					id: In(['folder1', 'folder2', 'folder3']),
+					resourceType: 'workflow',
 				});
 			});
 
@@ -3611,7 +3612,10 @@ describe('SourceControlImportService', () => {
 				});
 				expect(workflowService.deactivateWorkflowAsSystem).not.toHaveBeenCalled();
 				expect(executionPersistence.hardDeleteByWorkflowId).toHaveBeenCalledWith('wf-1');
-				expect(folderRepository.delete).toHaveBeenCalledWith({ id: In(['folder1']) });
+				expect(folderRepository.delete).toHaveBeenCalledWith({
+					id: In(['folder1']),
+					resourceType: 'workflow',
+				});
 			});
 
 			it('should unpublish a published straggler and wait for the teardown before deleting the folder', async () => {
@@ -3633,7 +3637,10 @@ describe('SourceControlImportService', () => {
 					await vi.advanceTimersByTimeAsync(5_000);
 					await deletion;
 
-					expect(workflowService.deactivateWorkflowAsSystem).toHaveBeenCalledWith('wf-1');
+					expect(workflowService.deactivateWorkflowAsSystem).toHaveBeenCalledWith(
+						'wf-1',
+						'source-control-pull',
+					);
 					expect(workflowPublishedVersionRepository.getPublishedVersionId).toHaveBeenCalledTimes(2);
 					// The folder row delete cascades to the workflow row, whose published-version
 					// mapping is RESTRICT: it has to be gone first.
@@ -4335,7 +4342,10 @@ describe('SourceControlImportService', () => {
 					where: { projectId: In(['project-1']), role: 'workflow:owner' },
 				});
 				expect(workflowService.deactivateWorkflowAsSystem).toHaveBeenCalledTimes(1);
-				expect(workflowService.deactivateWorkflowAsSystem).toHaveBeenCalledWith('wf-active');
+				expect(workflowService.deactivateWorkflowAsSystem).toHaveBeenCalledWith(
+					'wf-active',
+					'source-control-pull',
+				);
 				expect(executionPersistence.hardDeleteByWorkflowId).toHaveBeenCalledWith('wf-active');
 				expect(executionPersistence.hardDeleteByWorkflowId).toHaveBeenCalledWith('wf-inactive');
 				expect(projectRepository.delete).toHaveBeenCalledWith({ id: In(['project-1']) });

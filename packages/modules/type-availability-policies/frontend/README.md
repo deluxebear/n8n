@@ -7,8 +7,10 @@ The descriptor `id` must match the backend module id
 (`packages/cli/src/modules/type-availability-policies`). Both `settings.activeModules` and
 `/rest/module-settings` are keyed by that string, and a mismatch fails silently.
 
-The module is license-gated on `feat:typeAvailabilityPolicies` and is not a default module. Enable it
-in a dev instance with `N8N_ENABLED_MODULES=type-availability-policies`.
+The module is license-gated on `feat:typeAvailabilityPolicies` and is a default module. The policy
+pages under Settings > Security stay hidden until
+`N8N_ENV_FEAT_NODE_AND_CREDENTIAL_POLICIES_SETTINGS=true`. The shell checks this flag in
+`useTypePoliciesSettingsFlag`, because a module cannot import `useEnvFeatureFlag`.
 
 `useTypeAvailabilityPoliciesStore` answers whether a project may use a node type or a credential
 type. The store is passive: it does not watch the route, because the projects store lives in the
@@ -58,6 +60,8 @@ admins when a project admin can lift it, otherwise the instance owners. The surf
 as a sibling of their own content, so a popover that closes never unmounts the open dialog.
 `RestrictedNodePopover` is the explanation for a row in a list: the lock trigger, the hover-opened
 popover and the dialog. The caller passes the row element and whether the row is keyboard-active.
+`RestrictedMenuItemMarker` puts that popover in a dropdown menu row. It finds the row itself, and
+the caller owns the dialog because the menu closes when the action is pressed.
 `RestrictedNodePanel` is the builder-facing explanation of a blocked node in the NDV, with the
 contact and replace actions. The shell renders the popover and the panel where a restricted node
 appears; the module owns their copy and behaviour.

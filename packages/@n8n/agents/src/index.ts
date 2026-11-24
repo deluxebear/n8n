@@ -101,10 +101,18 @@ export type {
 	OpenAIPromptCachingConfig,
 	PromptCachingConfig,
 	NativeToolDeferralConfig,
+	ToolDeferralConfig,
+	ToolDeferralMode,
 	BuiltTelemetry,
 	AttributeValue,
 	ObservationCursor,
+	ObservationResumeState,
+	BuiltObservationResumeStore,
 	ObservationalMemoryConfig,
+	ObservationWindowShares,
+	ObservationLogPlacement,
+	ObservationFailurePolicy,
+	ObservationReflectionMode,
 	BuiltObservationLogStore,
 	BuiltObservationLogTaskLockStore,
 	MemoryTaskUsageReport,
@@ -214,6 +222,9 @@ export {
 	withPromptSizeBreakdown,
 } from './runtime/loop/prompt-size-usage';
 export type {
+	ContextCueEntry,
+	ContextCueProvider,
+	ContextCueRequest,
 	VolatileInstructionsContext,
 	VolatileInstructionsProvider,
 } from './runtime/loop/agent-runtime';
@@ -237,7 +248,6 @@ export {
 	renderSkillCatalogPrompt,
 	RUNTIME_SKILL_TOOL_NAMES,
 	RUNTIME_SKILL_FILE_NAME,
-	RUNTIME_SKILL_LIFETIMES,
 	RUNTIME_SKILL_MAX_OUTPUT_BYTES,
 	RUNTIME_SKILL_LINKED_FILE_GROUPS,
 	RUNTIME_SKILL_NAME_PATTERN,
@@ -261,17 +271,12 @@ export type {
 	RuntimeSkillLoader,
 	RuntimeSkillLoadError,
 	RuntimeSkillMcpServerDependency,
-	RuntimeSkillLifetime,
 	RuntimeSkillPolicyContract,
 	RuntimeSkillReferenceContract,
 	RuntimeSkillReferenceLocation,
 	RuntimeSkillRegistry,
 	RuntimeSkillRegistryEntry,
 	RuntimeSkillSource,
-	RuntimeSkillContextUsage,
-	RuntimeSkillState,
-	RuntimeSkillStateScope,
-	RuntimeSkillStateStore,
 	RuntimeSkillValidationError,
 	RuntimeSkillValidationResult,
 } from './skills';
@@ -310,8 +315,26 @@ export type { HandlerExecutor } from './types/sdk/handler-executor';
 export {
 	filterLlmMessages,
 	getCreatedAt,
+	isHostInstruction,
 	isLlmMessage,
+	isRuntimeContextCue,
 } from './sdk/message';
+export {
+	createContextCueProvider,
+	parseAblatedContextCues,
+	whenSkillLoads,
+	whileSkillLoaded,
+} from './context-cues';
+export type {
+	ContextCue,
+	ContextCueMatch,
+	ContextCueProviderOptions,
+	ContextCueRetrievalMethod,
+	ContextCueRetrievalTrace,
+	ContextCueSet,
+	ContextCueSetPredicate,
+	ContextCueStepQuery,
+} from './context-cues';
 export { fetchProviderCatalog } from './sdk/catalog';
 export type {
 	ProviderCatalog,
@@ -443,6 +466,11 @@ export { loadReplayedMessages } from './runtime/memory/memory-orchestrator';
 export { settleAbandonedToolCallsInMemory } from './runtime/memory/strip-orphaned-tool-messages';
 export { prepareObservationLogBatchCursor } from './runtime/memory/observation-log-batch';
 export {
+	fromObservationResumeColumns,
+	toObservationResumeColumns,
+	type ObservationResumeColumns,
+} from './runtime/memory/observation-resume-columns';
+export {
 	parseObservationLogMarkdown,
 	renderObserverTranscript,
 	runObservationLogObserver,
@@ -546,5 +574,5 @@ export type {
 
 export type { JSONObject, JSONArray, JSONValue } from './types/utils/json';
 
-export { modelConfigToId } from './utils/model';
+export { getCatalogModelId, modelConfigToId } from './utils/model';
 export { isZodSchema, zodToJsonSchema } from './utils/zod';

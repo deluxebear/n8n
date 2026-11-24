@@ -1,3 +1,4 @@
+import { OperationalError } from '@n8n/errors';
 import type {
 	IHttpRequestMethods,
 	IDataObject,
@@ -9,7 +10,7 @@ import type {
 	RequestPath,
 	WithRequestTarget,
 } from 'n8n-workflow';
-import { OperationalError, requestUrl } from 'n8n-workflow';
+import { requestUrl } from 'n8n-workflow';
 
 import { BASE_URL } from './constants';
 

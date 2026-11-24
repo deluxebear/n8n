@@ -21,6 +21,7 @@ import type {
 	LOG_LEVELS,
 	BINARY_MODE_COMBINED,
 	BINARY_MODE_SEPARATE,
+	WORKFLOW_ENGINE_TYPES,
 } from './constants';
 
 import type {
@@ -463,12 +464,14 @@ export interface ICredentialType {
 	__overwrittenProperties?: string[];
 	__skipManagedCreation?: boolean;
 	__showManagedOAuthScopes?: boolean;
+	/** Lets n8n register the OAuth2 client at the `serverUrl` property, so users need no app of their own. */
+	dynamicClientRegistration?: boolean;
 	authenticate?: IAuthenticate;
 	preAuthentication?: (
 		this: IHttpRequestHelper,
 		credentials: ICredentialDataDecryptedObject,
 	) => Promise<IDataObject>;
-	test?: ICredentialTestRequest;
+	test?: ICredentialTestRequest | ICredentialTestFunction;
 	genericAuth?: boolean;
 	httpRequestNode?: ICredentialHttpRequestNode;
 	supportedNodes?: string[];
@@ -3864,6 +3867,7 @@ interface IWorkflowHistory {
 	connections: IConnections;
 	nodeGroups: IWorkflowGroup[];
 	authors: string;
+	settings?: IWorkflowSettings;
 	name: string | null;
 	description: string | null;
 	createdAt: Date;
@@ -3895,6 +3899,8 @@ export type WorkflowExecutionMockDataSource =
 
 export interface IWorkflowExecutionTelemetryMetadata {
 	mockDataSources?: WorkflowExecutionMockDataSource[];
+	/** Credentials the run uses only through the acting user's own access, not the workflow's project. */
+	personalCredentialsCount?: number;
 }
 
 /**
@@ -4228,6 +4234,8 @@ export namespace WorkflowSettings {
 
 export type WorkflowSettingsBinaryMode = typeof BINARY_MODE_SEPARATE | typeof BINARY_MODE_COMBINED;
 
+export type WorkflowEngineType = (typeof WORKFLOW_ENGINE_TYPES)[number];
+
 export interface IWorkflowSettings {
 	timezone?: 'DEFAULT' | string;
 	errorWorkflow?: 'DEFAULT' | string;
@@ -4239,7 +4247,7 @@ export interface IWorkflowSettings {
 	saveExecutionProgress?: 'DEFAULT' | boolean;
 	executionTimeout?: number;
 	executionOrder?: 'v0' | 'v1';
-	engineType?: 'v1' | 'v2';
+	engineType?: WorkflowEngineType;
 	binaryMode?: WorkflowSettingsBinaryMode;
 	timeSavedPerExecution?: number;
 	timeSavedMode?: 'fixed' | 'dynamic';
@@ -4404,6 +4412,8 @@ export interface INodeGraphItem {
 	toolSettings?: IDataObject; //various langchain tool's settings
 	sql?: string; //merge node combineBySql, cloud only
 	workflow_id?: string; //@n8n/n8n-nodes-langchain.toolWorkflow and n8n-nodes-base.executeWorkflow
+	agent_source?: 'inline' | 'referenced'; // n8n-nodes-base.messageAnAgent(Tool)
+	agent_id?: string; // n8n-nodes-base.messageAnAgent(Tool), referenced agent with a fixed id
 	response_mode?: string; // @n8n/n8n-nodes-langchain.chatTrigger, n8n-nodes-base.webhook selected response mode
 	public_chat?: boolean; // @n8n/n8n-nodes-langchain.chatTrigger
 	runs?: number;
@@ -4692,9 +4702,15 @@ export interface IUserSettings {
 	instanceAi?: {
 		credentialId?: string | null;
 		modelName?: string;
+		/** How the n8n Assistant treats actions set to Ask first. Unset means the rollout default. */
+		approvalMode?: 'manual' | 'auto';
 	};
 	mcpJsonNudge?: {
 		impressions: number;
+	};
+	mcpPreferencesNote?: {
+		impressions: number;
+		lastShownAt?: number;
 	};
 }
 

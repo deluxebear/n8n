@@ -10,7 +10,8 @@ import type {
 	RequestPath,
 	WithRequestTarget,
 } from 'n8n-workflow';
-import { NodeApiError, requestPath, requestUrl, toPathSegment, UserError } from 'n8n-workflow';
+import { UserError } from '@n8n/errors';
+import { NodeApiError, requestPath, requestUrl, toPathSegment } from 'n8n-workflow';
 import { createHash } from 'node:crypto';
 
 type SupabaseCredentials = {

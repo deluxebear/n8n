@@ -11,7 +11,8 @@ import type {
 	RequestPath,
 	WithRequestTarget,
 } from 'n8n-workflow';
-import { NodeApiError, OperationalError, requestPath, requestUrl } from 'n8n-workflow';
+import { OperationalError } from '@n8n/errors';
+import { NodeApiError, requestPath, requestUrl } from 'n8n-workflow';
 
 export interface IFormstackFieldDefinitionType {
 	id: string;

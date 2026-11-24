@@ -2,14 +2,14 @@ import type { IExecuteFunctions, IHookFunctions } from 'n8n-workflow';
 import { NodeApiError, NodeOperationError, requestPath } from 'n8n-workflow';
 
 import {
-	encryptSecret,
 	githubApiRequest,
 	getFileSha,
-	getRepositoryPublicKey,
 	githubApiRequestAllItems,
 	isBase64,
 	validateJSON,
 	validateSecretName,
+	encryptSecret,
+	getRepositoryPublicKey,
 } from '../GenericFunctions';
 import type { Mock } from 'vitest';
 

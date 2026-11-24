@@ -12,7 +12,8 @@ import type {
 	RequestPath,
 	WithRequestTarget,
 } from 'n8n-workflow';
-import { NodeApiError, UserError, decodePathValue, requestPath, requestUrl } from 'n8n-workflow';
+import { UserError } from '@n8n/errors';
+import { NodeApiError, decodePathValue, requestPath, requestUrl } from 'n8n-workflow';
 
 import type { Filter, Address, Search, FilterGroup, ProductAttribute } from './types';
 

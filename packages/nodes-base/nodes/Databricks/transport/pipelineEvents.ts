@@ -1,6 +1,7 @@
+import { UnexpectedError } from '@n8n/errors';
 import { isRecord } from '@n8n/utils/is-record';
 import type { IDataObject } from 'n8n-workflow';
-import { NodeOperationError, UnexpectedError, requestUrl } from 'n8n-workflow';
+import { NodeOperationError, requestUrl } from 'n8n-workflow';
 
 import {
 	databricksApiRequest,

@@ -11,7 +11,8 @@ import type {
 	RequestPath,
 	WithRequestTarget,
 } from 'n8n-workflow';
-import { requestUrl, UserError } from 'n8n-workflow';
+import { UserError } from '@n8n/errors';
+import { requestUrl } from 'n8n-workflow';
 
 import type { IAttachment, IRecord } from '../helpers/interfaces';
 

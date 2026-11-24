@@ -37,7 +37,8 @@ import {
 import { useSettingsStore } from '@n8n/stores/settings.store';
 import { useCloudPlanStore } from '@n8n/stores/cloudPlan.store';
 import { useInstanceAiStore } from './instanceAi.store';
-import type { InstanceAiMessageAuthorship, InstanceAiPrefillDeclaration } from './prefills';
+import { useAssistantCreditsStore } from './assistantCredits.store';
+import type { InstanceAiMessageAuthorship } from './prefills';
 import { useInstanceAiSettingsStore } from './instanceAiSettings.store';
 import {
 	INSTANCE_AI_THREAD_VIEW,
@@ -93,11 +94,7 @@ import {
 	INSTANCE_AI_WORKFLOW_PREVIEW_SUGGESTIONS_VERSION,
 	getPreviewWorkflow,
 } from '@/experiments/instanceAiWorkflowPreviewSuggestions';
-import {
-	InstanceAiSplitEmptyState,
-	INSTANCE_AI_SPLIT_EMPTY_STATE_SUGGESTIONS_VERSION,
-	useInstanceAiSplitEmptyStateExperiment,
-} from '@/experiments/instanceAiSplitEmptyState';
+import ApprovalModeSelector from './components/ApprovalModeSelector.vue';
 import InstanceAiInput from './components/InstanceAiInput.vue';
 import InstanceAiEmptyState from './components/InstanceAiEmptyState.vue';
 import InstanceAiViewHeader from './components/InstanceAiViewHeader.vue';
@@ -145,14 +142,8 @@ const INSTANCE_AI_WORKFLOW_PREVIEW_SUGGESTIONS_TITLE_KEY =
 	'experiments.instanceAiWorkflowPreviewSuggestions.emptyState.title' as BaseTextKey;
 const INSTANCE_AI_WORKFLOW_PREVIEW_SUGGESTIONS_PLACEHOLDER_KEY =
 	'experiments.instanceAiWorkflowPreviewSuggestions.input.placeholder' as BaseTextKey;
-const INSTANCE_AI_SPLIT_EMPTY_STATE_PLACEHOLDER_KEY: BaseTextKey =
-	'experiments.instanceAiSplitEmptyState.input.placeholder';
 const INSTANCE_AI_PERSONALIZED_PROMPT_SUGGESTIONS_PLACEHOLDER_KEY: BaseTextKey =
 	'experiments.instanceAiPersonalizedPromptSuggestions.input.placeholder';
-// Experiment cleanup: remove with instanceAiSplitEmptyState. The split layout
-// locks the composer to a constant height so hovering an example only swaps
-// the placeholder text — the examples list below it never shifts.
-const INSTANCE_AI_SPLIT_FIXED_ROWS = 5;
 const PERSONALIZED_PROMPT_METADATA_TIMEOUT_MS = 2000;
 const INSTANCE_AI_PERSONALIZED_PROMPT_SUGGESTIONS_EXPOSURE_EVENT =
 	'Instance AI personalized prompt suggestions exposed';
@@ -192,7 +183,8 @@ const canSelectProject = computed(
 		projectsStore.myProjects.length > 1,
 );
 const settingsStore = useInstanceAiSettingsStore();
-const { isLowCredits, isOutOfCredits } = storeToRefs(store);
+const creditsStore = useAssistantCreditsStore();
+const { isLowCredits, isOutOfCredits } = storeToRefs(creditsStore);
 const rootStore = useRootStore();
 const toast = useToast();
 const telemetry = useTelemetry();
@@ -217,7 +209,6 @@ const {
 	variant: workflowPreviewsAboveAssistantVariant,
 } = useWorkflowPreviewsAboveAssistantExperiment();
 // EOF Experiment cleanup
-const { isVariantEnabled: isSplitVariantEnabled } = useInstanceAiSplitEmptyStateExperiment();
 // Variant A replaces the empty state with an agent picker, variant B with a
 // "Chat with [agent]" picker — both force the default layout and win over
 // every other empty-state experiment.
@@ -233,8 +224,6 @@ const showWorkflowPreviewsAboveAssistant = computed(
 	() => isWorkflowPreviewsAboveAssistantEnabled.value && !forcesDefaultEmptyLayout.value,
 );
 // EOF Experiment cleanup
-// Experiment cleanup: remove with instanceAiSplitEmptyState.
-const splitPreviewPromptKey = ref<BaseTextKey | null>(null);
 const composerHasContent = ref(false);
 // Experiment cleanup (124_workflow_previews_above_assistant)
 const workflowPreviewPromptKey = ref<BaseTextKey | null>(null);
@@ -264,18 +253,10 @@ const isTaxonomyExperimentAssigned = computed(
 const showProactiveStarter = computed(
 	() => isProactiveAgentExperimentEnabled.value && !forcesDefaultEmptyLayout.value,
 );
-// Experiment cleanup: remove with instanceAiSplitEmptyState. The split layout
-// hosts the view header inside its chat column; the proactive starter (082)
-// keeps precedence.
-const isSplitLayoutActive = computed(
-	() =>
-		isSplitVariantEnabled.value && !showProactiveStarter.value && !forcesDefaultEmptyLayout.value,
-);
 const shouldTrackPersonalizedPromptSuggestionsExposure = computed(
 	() =>
 		typeof personalizedPromptSuggestionsVariant.value === 'string' &&
 		!showProactiveStarter.value &&
-		!isSplitLayoutActive.value &&
 		!forcesDefaultEmptyLayout.value &&
 		!showWorkflowPreviewsAboveAssistant.value && // Experiment cleanup (124_workflow_previews_above_assistant)
 		settingsStore.isWorkflowBuilderAvailable,
@@ -328,7 +309,6 @@ const shouldTrackInspirationFromTaxonomyExposure = computed(() => {
 	// These layouts replace the suggestion list on the Assistant empty state.
 	if (
 		showProactiveStarter.value ||
-		isSplitLayoutActive.value ||
 		forcesDefaultEmptyLayout.value ||
 		showWorkflowPreviewsAboveAssistant.value
 	) {
@@ -353,7 +333,6 @@ const shouldTrackWorkflowPreviewsEmptyStateView = computed(
 	() =>
 		workflowPreviewsAboveAssistantVariant.value !== null &&
 		!showProactiveStarter.value &&
-		!isSplitLayoutActive.value &&
 		!forcesDefaultEmptyLayout.value,
 );
 // EOF Experiment cleanup
@@ -703,7 +682,7 @@ const composerAttachOnlyMimeTypes = computed(() =>
 
 // The Assistant agent accepts only the files it can read. Check them on drop, not at send.
 const composerAcceptedMimeTypes = computed(() =>
-	settingsStore.isAssistantAgentEnabled ? ASSISTANT_AGENT_ACCEPTED_MIME_TYPES : undefined,
+	settingsStore.newThreadsUseAssistantAgent ? ASSISTANT_AGENT_ACCEPTED_MIME_TYPES : undefined,
 );
 
 const chatInputRef = ref<InstanceType<typeof InstanceAiInput> | null>(null);
@@ -733,13 +712,6 @@ watch(
 watch(selectedChatAgent, (agent) => {
 	selectedProject.value = agent ? agent.project.id : resolveInitialProjectId();
 });
-
-type ShelfSuggestionPayload = InstanceAiPrefillDeclaration & {
-	promptKey: BaseTextKey;
-	suggestionId: string;
-	suggestionKind: 'prompt' | 'quick_example';
-	position: number;
-};
 
 const emptyLayoutRef = useTemplateRef<HTMLElement>('emptyLayout');
 const centeredInputRef = useTemplateRef<HTMLElement>('centeredInput');
@@ -840,8 +812,15 @@ async function handleSubmit(
 		return;
 	}
 
-	if (settingsStore.isAssistantAgentEnabled && !isCreatingApp.value) {
-		await startAssistantAgentThread(selectedProject.value, message, attachments, restoreDraft);
+	if (settingsStore.newThreadsUseAssistantAgent && !isCreatingApp.value) {
+		await startAssistantAgentThread(
+			selectedProject.value,
+			message,
+			attachments,
+			restoreDraft,
+			authorship,
+			mentionCounts,
+		);
 		return;
 	}
 
@@ -944,6 +923,8 @@ async function startAssistantAgentThread(
 	message: string,
 	attachments: InstanceAiAttachment[] | undefined,
 	restoreDraft: () => boolean,
+	authorship: InstanceAiMessageAuthorship,
+	mentionCounts: AssistantMentionCounts,
 ) {
 	const acceptString = ASSISTANT_AGENT_ACCEPTED_MIME_TYPES;
 	const fileAttachments: InstanceAiFileAttachment[] = [];
@@ -973,6 +954,8 @@ async function startAssistantAgentThread(
 			base64ToFile(attachment.data, attachment.fileName, attachment.mimeType),
 		),
 		references: (attachments ?? []).filter((attachment) => attachment.type !== 'file'),
+		authorship,
+		mentionCounts,
 	};
 	stashPendingAssistantAgentMessage(pendingMessage);
 	stashAssistantAgentLaunch(pendingMessage.threadId, {
@@ -988,15 +971,6 @@ async function startAssistantAgentThread(
 		clearAssistantAgentLaunch(pendingMessage.threadId);
 		restoreDraftAfterFailedSubmit(restoreDraft);
 	}
-}
-
-function handleShelfSuggestionSubmit(payload: ShelfSuggestionPayload) {
-	void chatInputRef.value?.submitSuggestion(payload);
-}
-
-function handleShelfSuggestionInsert(payload: ShelfSuggestionPayload) {
-	splitPreviewPromptKey.value = null;
-	void chatInputRef.value?.insertSuggestion(payload);
 }
 
 // Experiment cleanup (124_workflow_previews_above_assistant)
@@ -1026,7 +1000,7 @@ async function handleWorkflowPreviewExampleUse(
 
 <template>
 	<div :class="$style.chatArea">
-		<InstanceAiViewHeader v-if="!isSplitLayoutActive" />
+		<InstanceAiViewHeader />
 
 		<div :class="$style.contentArea">
 			<div v-if="showProactiveStarter" :class="$style.proactiveLayout">
@@ -1036,8 +1010,8 @@ async function handleWorkflowPreviewExampleUse(
 				<div :class="$style.proactiveInput">
 					<CreditWarningBanner
 						v-if="isOutOfCredits || creditBanner.visible.value"
-						:credits-remaining="store.creditsRemaining"
-						:credits-quota="store.creditsQuota"
+						:credits-remaining="creditsStore.creditsRemaining"
+						:credits-quota="creditsStore.creditsQuota"
 						:message="outOfCreditsMessage"
 						:dismissible="!isOutOfCredits"
 						@upgrade-click="goToUpgrade('instance-ai', 'upgrade-instance-ai')"
@@ -1055,6 +1029,9 @@ async function handleWorkflowPreviewExampleUse(
 						@submit="handleSubmit"
 						@content-change="composerHasContent = $event"
 					>
+						<template #footer-after-menu>
+							<ApprovalModeSelector />
+						</template>
 						<template v-if="canSelectProject" #footer>
 							<div :class="$style.inputFooter">
 								<ProjectSelect v-model="selectedProject" />
@@ -1066,59 +1043,6 @@ async function handleWorkflowPreviewExampleUse(
 				<ClaudeEntryPoint placement="footer" />
 				<!-- EOF Experiment cleanup -->
 			</div>
-			<InstanceAiSplitEmptyState
-				v-else-if="isSplitLayoutActive"
-				:project-id="selectedProject"
-				:disabled="isStartingThread || !settingsStore.isWorkflowBuilderAvailable"
-				:writing="composerHasContent"
-				@submit-suggestion="handleShelfSuggestionSubmit"
-				@insert-suggestion="handleShelfSuggestionInsert"
-				@example-change="(_i, key) => (splitPreviewPromptKey = key)"
-			>
-				<template #header>
-					<InstanceAiViewHeader />
-				</template>
-				<template #input>
-					<div :class="$style.centeredInput">
-						<CreditWarningBanner
-							v-if="isOutOfCredits || creditBanner.visible.value"
-							:credits-remaining="store.creditsRemaining"
-							:credits-quota="store.creditsQuota"
-							:message="outOfCreditsMessage"
-							:dismissible="!isOutOfCredits"
-							@upgrade-click="goToUpgrade('instance-ai', 'upgrade-instance-ai')"
-							@dismiss="creditBanner.dismiss()"
-						/>
-						<WorkflowBuilderUnavailableNotice v-if="!settingsStore.isWorkflowBuilderAvailable" />
-						<LimitedModeNotice />
-						<InstanceAiInput
-							ref="chatInputRef"
-							:is-submitting="isStartingThread"
-							:is-out-of-credits="isOutOfCredits"
-							:is-workflow-builder-available="settingsStore.isWorkflowBuilderAvailable"
-							:mentions-enabled="mentionsEnabled"
-							:mention-project-id="selectedProject"
-							:placeholder-key="INSTANCE_AI_SPLIT_EMPTY_STATE_PLACEHOLDER_KEY"
-							:preview-prompt-key="composerHasContent ? null : splitPreviewPromptKey"
-							:fixed-rows="INSTANCE_AI_SPLIT_FIXED_ROWS"
-							:submit-label="i18n.baseText('experiments.instanceAiSplitEmptyState.cta.buildWithAi')"
-							:submit-active-requires-focus="true"
-							:suggestion-catalog-version="INSTANCE_AI_SPLIT_EMPTY_STATE_SUGGESTIONS_VERSION"
-							@submit="handleSubmit"
-							@content-change="composerHasContent = $event"
-						>
-							<template v-if="canSelectProject" #footer>
-								<div :class="$style.inputFooter" data-test-id="instance-ai-split-project-select">
-									<ProjectSelect v-model="selectedProject" />
-								</div>
-							</template>
-						</InstanceAiInput>
-						<!-- Experiment cleanup (123_surface_mcp_to_claude_trial_users) -->
-						<ClaudeEntryPoint placement="footer" />
-						<!-- EOF Experiment cleanup -->
-					</div>
-				</template>
-			</InstanceAiSplitEmptyState>
 			<div
 				v-else
 				ref="emptyLayout"
@@ -1163,7 +1087,7 @@ async function handleWorkflowPreviewExampleUse(
 					<InstanceAiFreeNudge
 						v-if="!isCreatingApp"
 						:eligible="
-							store.creditsQuota !== undefined &&
+							creditsStore.creditsQuota !== undefined &&
 							!isOutOfCredits &&
 							!creditBanner.visible.value &&
 							settingsStore.isWorkflowBuilderAvailable
@@ -1171,8 +1095,8 @@ async function handleWorkflowPreviewExampleUse(
 					/>
 					<CreditWarningBanner
 						v-if="isOutOfCredits || creditBanner.visible.value"
-						:credits-remaining="store.creditsRemaining"
-						:credits-quota="store.creditsQuota"
+						:credits-remaining="creditsStore.creditsRemaining"
+						:credits-quota="creditsStore.creditsQuota"
 						:message="outOfCreditsMessage"
 						:dismissible="!isOutOfCredits"
 						@upgrade-click="goToUpgrade('instance-ai', 'upgrade-instance-ai')"
@@ -1201,6 +1125,10 @@ async function handleWorkflowPreviewExampleUse(
 						@workflow-preview="handleWorkflowPreview"
 						@content-change="composerHasContent = $event"
 					>
+						<!-- Variant B can start an Agent chat, where Assistant approval modes don't apply. -->
+						<template v-if="!selectedChatAgent" #footer-after-menu>
+							<ApprovalModeSelector />
+						</template>
 						<!-- Experiment cleanup (123_surface_mcp_to_claude_trial_users) -->
 						<template v-if="showClaudeBeforeSuggestions" #before-suggestions>
 							<ClaudeEntryPoint :class="$style.claudeBeforeSuggestions" placement="footer" />

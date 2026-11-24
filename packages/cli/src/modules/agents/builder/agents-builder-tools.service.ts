@@ -31,7 +31,7 @@ import {
 	AgentJsonConfigSchema,
 	isDraftAgentConfig,
 	isDraftIntegration,
-	isCredentialAgentIntegration,
+	integrationNeedsCredential,
 	sanitizeAgentJsonConfig,
 	tryParseConfigJson,
 	type AgentJsonConfig,
@@ -48,12 +48,11 @@ import type { Operation } from 'fast-json-patch';
 import { z } from 'zod';
 
 import { CredentialTypes } from '@/credential-types';
-import { CollaborationService } from '@/collaboration/collaboration.service';
+import { CredentialsPermissionChecker } from '@/executions/pre-execution-checks/credentials-permission-checker';
 import { ConflictError, LockedError, UnexpectedError, UserError } from '@n8n/errors';
-import { CredentialsFinderService } from '@n8n/backend-services';
+import { CredentialsFinderService, NodeTypesProxy } from '@n8n/backend-services';
 import { findUsableMcpCredential } from '@/modules/mcp-registry/mcp-credential-access';
 import { McpRegistryService } from '@/modules/mcp-registry/registry/mcp-registry.service';
-import { NodeTypes } from '@/node-types';
 import { OauthService } from '@/oauth/oauth.service';
 import { userHasScopes } from '@/permissions.ee/check-access';
 import { AiGatewayService } from '@/services/ai-gateway.service';
@@ -68,6 +67,7 @@ import { AgentIntegrationPersistenceService } from '../agent-integration-persist
 import { AgentPublishService } from '../agent-publish.service';
 import { AgentSkillsService } from '../agent-skills.service';
 import { AgentTaskService } from '../agent-task.service';
+import { AgentWriteLockService } from '../agent-write-lock.service';
 import {
 	AgentTestRunService,
 	collectStandardApprovals,
@@ -527,12 +527,13 @@ export class AgentsBuilderToolsService {
 		private readonly aiService: AiService,
 		private readonly aiGatewayService: AiGatewayService,
 		private readonly outboundHttp: OutboundHttp,
-		private readonly nodeTypes: NodeTypes,
+		private readonly nodeTypes: NodeTypesProxy,
 		private readonly freeAiCreditsService: FreeAiCreditsService,
 		private readonly telemetry: Telemetry,
-		private readonly collaborationService: CollaborationService,
+		private readonly agentWriteLockService: AgentWriteLockService,
 		private readonly agentSkillRefs: AgentSkillRefsService,
 		private readonly credentialsFinderService: CredentialsFinderService,
+		private readonly credentialsPermissionChecker: CredentialsPermissionChecker,
 	) {}
 
 	/**
@@ -596,7 +597,7 @@ export class AgentsBuilderToolsService {
 	 */
 	private async getEditorLockFailure(agentId: string): Promise<EditorLockFailure | null> {
 		try {
-			await this.collaborationService.ensureAgentEditable(agentId);
+			await this.agentWriteLockService.ensureAgentEditable(agentId);
 			return null;
 		} catch (error) {
 			if (error instanceof LockedError) {
@@ -832,7 +833,7 @@ export class AgentsBuilderToolsService {
 		return (agent?.integrations ?? [])
 			.filter(
 				(integration) =>
-					isCredentialAgentIntegration(integration) && !isDraftIntegration(integration),
+					integrationNeedsCredential(integration) && !isDraftIntegration(integration),
 			)
 			.map((integration) => integration.credentialId);
 	}
@@ -844,7 +845,16 @@ export class AgentsBuilderToolsService {
 		projectId: string,
 	): BuiltTool {
 		return buildResolveLlmTool({
-			credentialProvider,
+			// The model picker offers only credentials the user can use through their
+			// own access. Validation and test runs keep the full provider.
+			credentialProvider: {
+				resolve: async (credentialId) => await credentialProvider.resolve(credentialId),
+				list: async () =>
+					await this.credentialsPermissionChecker.filterUsableThroughOwnAccess(
+						user,
+						await credentialProvider.list(),
+					),
+			},
 			modelLookup,
 			isProviderServedByGateway: async (provider) => {
 				try {
@@ -1099,14 +1109,15 @@ export class AgentsBuilderToolsService {
 					operations: z
 						.preprocess(parseJsonStringInput, z.array(jsonPatchOperationSchema))
 						.describe('RFC 6902 operations'),
-					baseConfigHash: z.string().nullable().describe(BASE_CONFIG_HASH_FIELD_DESCRIPTION),
+					// No null: a patch needs an existing config, so it always has a hash.
+					baseConfigHash: z
+						.string()
+						.min(1)
+						.describe('configHash of your latest config read or write'),
 				}),
 			)
 			.handler(
-				async ({
-					operations,
-					baseConfigHash,
-				}: { operations: unknown; baseConfigHash: string | null }) =>
+				async ({ operations, baseConfigHash }: { operations: unknown; baseConfigHash: string }) =>
 					await this.patchBuilderConfig(
 						agentId,
 						projectId,
@@ -1675,7 +1686,7 @@ export class AgentsBuilderToolsService {
 		projectId: string,
 		user: User,
 		operations: unknown,
-		baseConfigHash: string | null,
+		baseConfigHash: string,
 		track: BuilderTrackFn,
 	) {
 		const editorLock = await this.getEditorLockFailure(agentId);
@@ -1683,8 +1694,9 @@ export class AgentsBuilderToolsService {
 		const parsed = readStructuredToolInput(operations);
 		if (!parsed.ok) return { ok: false, stage: 'parse', errors: parsed.errors };
 		const fresh = await this.getFreshConfigSnapshot(agentId, projectId, baseConfigHash);
-		if (!fresh.ok) return fresh;
-		if (!fresh.snapshot.config) {
+		// An absent config has a null hash, which a patch cannot send, so it fails as stale.
+		if (!fresh.ok && fresh.config !== null) return fresh;
+		if (!fresh.ok || !fresh.snapshot.config) {
 			return {
 				ok: false,
 				stage: 'patch',

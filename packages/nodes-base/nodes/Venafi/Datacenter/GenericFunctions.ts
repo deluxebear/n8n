@@ -8,7 +8,8 @@ import type {
 	RequestPath,
 	WithRequestTarget,
 } from 'n8n-workflow';
-import { OperationalError, requestUrl } from 'n8n-workflow';
+import { OperationalError } from '@n8n/errors';
+import { requestUrl } from 'n8n-workflow';
 
 import { parseNextPageLink } from '../parseNextPageLink';
 

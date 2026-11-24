@@ -1,6 +1,8 @@
 import {
 	AgentIntegrationConfigSchema,
 	AgentIntegrationSchema,
+	hasChannelRuntime,
+	integrationNeedsCredential,
 	isCredentialAgentIntegration,
 	type AgentIntegrationConfig,
 	type AgentIntegrationDisconnectWarning,
@@ -87,8 +89,8 @@ export class AgentIntegrationManagementService {
 		const integration = await this.validateConfig(
 			withDraftValues(options.integration, options.agent.integrations ?? []),
 		);
-		// n8n Chat has no credential to look up or claim.
-		if (isCredentialAgentIntegration(integration)) {
+		// A channel without a credential has nothing to look up or claim.
+		if (integrationNeedsCredential(integration)) {
 			await this.assertUsableCredential(options.agent, options.user, integration);
 		}
 
@@ -168,8 +170,8 @@ export class AgentIntegrationManagementService {
 				options.pushRef,
 			);
 		}
-		// n8n Chat has no runtime to reconcile.
-		if (add && isCredentialAgentIntegration(add) && result.published !== undefined) {
+		// A channel without a platform runtime has nothing to reconcile.
+		if (add && hasChannelRuntime(add) && result.published !== undefined) {
 			connected = await this.reconcileRuntimeWithPublication(
 				agent,
 				add,
@@ -352,8 +354,8 @@ export class AgentIntegrationManagementService {
 		add: AgentIntegrationConfig,
 		published: boolean,
 	): Promise<boolean> {
-		// n8n Chat has no channel runtime; the persisted entry is all there is.
-		if (!isCredentialAgentIntegration(add)) return false;
+		// A channel without a platform runtime is the persisted entry alone.
+		if (!hasChannelRuntime(add)) return false;
 		if (!published) {
 			await this.chatService.validateBeforeConnect(agent.id, add, agent.projectId);
 			return false;
@@ -465,7 +467,7 @@ export class AgentIntegrationManagementService {
 		) {
 			throw new NotFoundError(`Credential "${integration.credentialId}" not found`);
 		}
-		if (!implementation.credentialTypes.includes(credential.type)) {
+		if (!implementation.acceptedCredentialTypes(integration).includes(credential.type)) {
 			throw new BadRequestError(
 				`${implementation.displayLabel} integrations do not support ${credential.type} credentials`,
 			);

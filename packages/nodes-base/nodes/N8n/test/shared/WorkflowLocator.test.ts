@@ -1,7 +1,7 @@
 import type { ILoadOptionsFunctions } from 'n8n-workflow';
 import { mockDeep } from 'vitest-mock-extended';
 
-import { searchWorkflows } from '../../WorkflowLocator';
+import { searchWorkflows } from '../../shared/WorkflowLocator';
 
 describe('n8n workflow list search', () => {
 	it.each([
@@ -52,6 +52,7 @@ describe('n8n workflow list search', () => {
 		expect(credentialType).toBe('n8nApi');
 		expect(options.method).toBe('GET');
 		expect(String(options.uri)).toBe(expectedUrl);
+		expect(options.headers).toEqual({ 'x-n8n-client': 'n8n-node' });
 		expect(result.results).toEqual([{ name: 'Example Workflow (#1)', value: 1 }]);
 	});
 });

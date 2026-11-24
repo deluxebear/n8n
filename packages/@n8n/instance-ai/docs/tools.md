@@ -13,6 +13,61 @@ union when the host has not wired them. Some tools instead keep an unavailable
 action or fallback tool surface and return an error or empty result. Tool ids
 live in `src/tools/tool-ids.ts`.
 
+### Approval modes
+
+Each user picks an approval mode in the chat. Auto needs the PostHog flag
+`144_instance_ai_approval_modes`. Without it, every run is Manual and the chat
+shows no selector. With it, a user without a saved choice gets Auto. The judge
+uses `N8N_INSTANCE_AI_APPROVAL_JUDGE_MODEL`, or the utility model when that is
+empty or can't be resolved. The mode is stored in `user.settings.instanceAi.approvalMode` through
+`PUT /assistant/preferences`. Auto mode is not part of the Agent Builder: a
+thread that builds or edits an agent, or a message that attaches an agent,
+runs in Manual mode.
+
+Every action passes two checks in order:
+
+1. **Rules.** The admin value in Settings applies first. Block stops the
+   action, Allow runs it, and a thread grant from "Always allow" counts as
+   Allow. Tools behind the SDK approval gate (MCP tools) save their "Always
+   allow" grants as thread grants too (`createThreadApprovalContext`). In Auto, a user's MCP tool permissions can only make the admin's MCP
+   permissions stricter. Manual keeps a user's MCP permissions as they are.
+2. **Mode.** An action set to Ask first suspends for approval. Manual shows the
+   card. Auto reviews the suspension first, in `src/approval-review/`:
+   - fixed rules in `pending-approval.ts` decide first: actions that remove,
+     stop or replace something always show the card, small additions run, and
+     an MCP call too long for the judge to read in full shows the card;
+   - every other plain approval, including web fetches, web searches and MCP
+     tool calls, goes to the judge model, which approves or asks. An error or
+     a timeout shows the card.
+
+Tools need no code for Auto mode. The wrapper in `approval-review.ts` calls a
+tool with a probe `suspend()` and, when the review approves, again with
+`{ approved: true }`. Cards that need input (setup, credentials, questions,
+resource decisions) always show. An approved call emits `auto-approval`, its
+judge tokens are claimed from the user's credits, and a tool keeps the grant
+that its approval gives, as "Allow once" does in Manual mode. A call that the
+review sends to the user suspends with the tool's payload and `askReason`, and
+the card shows the reason below the description. `askReason.kind` is `judge`
+with the judge's sentence in `text`, or a fixed cause that the frontend
+translates (`instanceAi.approvalAskReason.*`): `always-ask`, `too-long` or
+`judge-failed`. The wrapper adds `askReason` to the tool's suspend schema, so
+the stored suspension keeps it. Telemetry that
+the probe tracks is sent only when the card shows. `approval-judge.ts`
+describes what the judge reads and how it cuts long input.
+
+The judge sees the user's messages, the user's answers in question cards, and
+the Assistant's text.
+
+The trace of a run shows the mode as `approval_mode` in the metadata of its
+root run and its `agent: orchestrator` run: `manual`, `auto`, or `unavailable`
+when the flag is off. In Auto, each reviewed approval adds an `approval: review`
+run to the trace, with the tag `approval-review`. Its metadata has `tool_name`,
+`approval_route` (`always-ask`, `low-risk` or `judge`), `approval_decision`
+(`approve` or `ask`), `approval_decided_by` (`rule` or `judge`),
+`approval_judge_failed`, and `tool_call_id` when the call has one. Its output
+adds `approval_reason`. A decision that the judge model made also has its
+`llm: approval-judge` run. A review that failed before the model call has none.
+
 ### Approval copy
 
 An approval card has a title and a description. The title names the asset without
@@ -391,6 +446,9 @@ Archive a workflow (soft delete, deactivates if needed). Reverse it with
 |-------|------|----------|-------------|
 | `workflowId` | string | yes | Workflow to archive |
 
+"Always allow" on the approval card saves one thread grant for the action. The
+Assistant then archives other workflows in the thread without a card.
+
 **Returns**: `{ success: boolean }`
 
 ### `unarchive_workflow`
@@ -474,6 +532,9 @@ Stop a workflow from running in production. The draft is preserved.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `workflowId` | string | yes | Workflow ID |
+
+"Always allow" on the approval card saves one thread grant for the action, as
+it does for `archive_workflow`.
 
 **Returns**: `{ success: boolean }`
 
@@ -966,13 +1027,13 @@ returns `nodes`.
 
 ### `get_node_types`
 
-Get TypeScript definitions for one to ten node types, including exact
+Get TypeScript definitions for one or more node types, including exact
 parameters, credentials, display conditions, builder annotations, Gateway
 credits metadata, and webhook or trigger details.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `nodeTypes` | array | yes | One to ten node requests. Each entry is a node type string or `{ nodeType, version?, resource?, operation?, mode? }` |
+| `nodeTypes` | array | yes | One or more node requests. Each entry is a node type string or `{ nodeType, version?, resource?, operation?, mode? }` |
 
 **Returns**: `{ definitions }`. A definition that cannot load carries an
 `error` field.
@@ -1318,8 +1379,8 @@ carries *what* it does.
 Build n8n Apps. Present only when the apps module is active, the run has a
 bound project and the sandbox is available. The adapter wires `appService`, and
 the turn setup removes it without a sandbox, so the tool, the `app-builder`
-skill and the `<app-targets>` block share one gate. Deferred: the skill lists
-the tool in `recommended_tools`.
+skill and the `<app-targets>` block share one gate. Deferred: the tool is in the
+default `tools` tool group, which the skill lists in `recommended_tool_groups`.
 
 | Action | Scope | Description |
 |--------|-------|-------------|
@@ -1589,7 +1650,9 @@ The orchestrator receives the safe native domain tools and orchestration tools
 from `src/tools/index.ts`. Its workflow tool omits raw workflow JSON reads and
 full-definition replacements. It receives the four node tools: `search_nodes`, `get_node_types`, `get_node_parameter_options`, and `execute_node`.
 External and local MCP tools are added after their names are checked against the
-native tools active for the current request.
+native tools active for the current request. "Always allow" on their approval cards
+saves a thread grant, the same grant that built-in tools use
+(`createThreadApprovalContext`).
 
 The embedded Agent Builder uses the agents-module builder's own tool surface
 through `agent_builder_build_agent`. It does not receive the Instance AI domain registry. It
@@ -1623,7 +1686,7 @@ existing domain.
 4. Register it in `src/tools/index.ts` with `createOrchestratorDomainTools` or
    `createOrchestrationTools`
 5. Decide whether it belongs in `ALWAYS_LOADED_TOOL_NAMES`. Everything not in
-   that set is normally reached through `search_tools` + `load_tool`. Deferral is the right default, but a tool whose job is to reveal
+   that set is listed by name in the tool catalog and run through `call_tool`. Deferral is the right default, but a tool whose job is to reveal
    an absence, or to redirect the model's attention, cannot be found by
    searching for it
 6. For HITL tools, define `suspendSchema` and `resumeSchema` — `@n8n/agents` handles
