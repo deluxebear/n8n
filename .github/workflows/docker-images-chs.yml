@@ -110,25 +110,10 @@ jobs:
 
           # n8n / runners / distroless tags (single redirect for shellcheck SC2129)
           {
-            echo "n8n_tags<<EOF"
-            echo "${GHCR_N8N}:${REF_NAME}-${PLATFORM}"
-            echo "${DOCKER_N8N}:${REF_NAME}-${PLATFORM}"
-            echo "${GHCR_N8N}:latest-${PLATFORM}"
-            echo "${DOCKER_N8N}:latest-${PLATFORM}"
-            echo "EOF"
+            echo "n8n_tags=${GHCR_N8N}:${REF_NAME}-${PLATFORM},${DOCKER_N8N}:${REF_NAME}-${PLATFORM},${GHCR_N8N}:latest-${PLATFORM},${DOCKER_N8N}:latest-${PLATFORM}"
             echo "n8n_primary_tag=${GHCR_N8N}:${REF_NAME}"
-            echo "runners_tags<<EOF"
-            echo "${GHCR_RUNNERS}:${REF_NAME}-${PLATFORM}"
-            echo "${DOCKER_RUNNERS}:${REF_NAME}-${PLATFORM}"
-            echo "${GHCR_RUNNERS}:latest-${PLATFORM}"
-            echo "${DOCKER_RUNNERS}:latest-${PLATFORM}"
-            echo "EOF"
-            echo "runners_distroless_tags<<EOF"
-            echo "${GHCR_RUNNERS}:${REF_NAME}-distroless-${PLATFORM}"
-            echo "${DOCKER_RUNNERS}:${REF_NAME}-distroless-${PLATFORM}"
-            echo "${GHCR_RUNNERS}:latest-distroless-${PLATFORM}"
-            echo "${DOCKER_RUNNERS}:latest-distroless-${PLATFORM}"
-            echo "EOF"
+            echo "runners_tags=${GHCR_RUNNERS}:${REF_NAME}-${PLATFORM},${DOCKER_RUNNERS}:${REF_NAME}-${PLATFORM},${GHCR_RUNNERS}:latest-${PLATFORM},${DOCKER_RUNNERS}:latest-${PLATFORM}"
+            echo "runners_distroless_tags=${GHCR_RUNNERS}:${REF_NAME}-distroless-${PLATFORM},${DOCKER_RUNNERS}:${REF_NAME}-distroless-${PLATFORM},${GHCR_RUNNERS}:latest-distroless-${PLATFORM},${DOCKER_RUNNERS}:latest-distroless-${PLATFORM}"
           } >> "${GITHUB_OUTPUT}"
 
       - name: Set up Docker Buildx
@@ -148,46 +133,43 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push n8n image
-        uses: docker/build-push-action@v5
+        uses: docker/bake-action@v6
+        env:
+          N8N_VERSION: ${{ steps.context.outputs.n8n_version }}
+          N8N_RELEASE_TYPE: custom
+          PLATFORMS: ${{ matrix.docker_platform }}
+          N8N_TAGS: ${{ steps.determine-tags.outputs.n8n_tags }}
         with:
-          context: .
-          file: ./docker/images/n8n/Dockerfile
-          build-args: |
-            NODE_VERSION=${{ env.NODE_VERSION }}
-            N8N_VERSION=${{ steps.context.outputs.n8n_version }}
-            N8N_RELEASE_TYPE=custom
-          platforms: ${{ matrix.docker_platform }}
+          files: ./docker/docker-bake.hcl
+          targets: n8n
           provenance: false
           push: true
-          tags: ${{ steps.determine-tags.outputs.n8n_tags }}
 
       - name: Build and push runners image (Alpine)
-        uses: docker/build-push-action@v5
+        uses: docker/bake-action@v6
+        env:
+          N8N_VERSION: ${{ steps.context.outputs.n8n_version }}
+          N8N_RELEASE_TYPE: custom
+          PLATFORMS: ${{ matrix.docker_platform }}
+          RUNNERS_TAGS: ${{ steps.determine-tags.outputs.runners_tags }}
         with:
-          context: .
-          file: ./docker/images/runners/Dockerfile
-          build-args: |
-            NODE_VERSION=${{ env.NODE_VERSION }}
-            N8N_VERSION=${{ steps.context.outputs.n8n_version }}
-            N8N_RELEASE_TYPE=custom
-          platforms: ${{ matrix.docker_platform }}
+          files: ./docker/docker-bake.hcl
+          targets: runners
           provenance: false
           push: true
-          tags: ${{ steps.determine-tags.outputs.runners_tags }}
 
       - name: Build and push runners image (distroless)
-        uses: docker/build-push-action@v5
+        uses: docker/bake-action@v6
+        env:
+          N8N_VERSION: ${{ steps.context.outputs.n8n_version }}
+          N8N_RELEASE_TYPE: custom
+          PLATFORMS: ${{ matrix.docker_platform }}
+          RUNNERS_DISTROLESS_TAGS: ${{ steps.determine-tags.outputs.runners_distroless_tags }}
         with:
-          context: .
-          file: ./docker/images/runners/Dockerfile.distroless
-          build-args: |
-            NODE_VERSION=${{ env.NODE_VERSION }}
-            N8N_VERSION=${{ steps.context.outputs.n8n_version }}
-            N8N_RELEASE_TYPE=custom
-          platforms: ${{ matrix.docker_platform }}
+          files: ./docker/docker-bake.hcl
+          targets: runners-distroless
           provenance: false
           push: true
-          tags: ${{ steps.determine-tags.outputs.runners_distroless_tags }}
 
   create_multi_arch_manifest:
     name: Create Multi-Arch Manifest
