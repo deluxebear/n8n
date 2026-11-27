@@ -256,7 +256,7 @@ describe('Data Transformation Functions', () => {
 			});
 
 			test('should return a DateTime for JS Date', () => {
-				const result = asDateTime(evaluate('={{ new Date(2024, 0, 1, 12).toDateTime() }}'));
+				const result = asDateTime(evaluate('={{ new Date("2024-01-01T12:00:00Z").toDateTime() }}'));
 				expect(result).toBeInstanceOf(DateTime);
 				expect(result.day).toEqual(1);
 				expect(result.month).toEqual(1);
